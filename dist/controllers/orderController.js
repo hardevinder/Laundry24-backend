@@ -1,7 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.placeOrder = void 0;
-const client_1 = require("@prisma/client"); // Prisma.Decimal
+exports.getMyOrders = exports.placeOrder = void 0;
+const client_1 = require("@prisma/client"); // Prisma.Decimal, Order type
+/* ---------------------------
+   Helper: Validate Pincode
+--------------------------- */
 function parseAndValidatePincode(value) {
     if (value === undefined || value === null)
         return null;
@@ -15,70 +18,62 @@ function parseAndValidatePincode(value) {
         return null;
     return n;
 }
+/* --------------------------------------------------
+   ✅ Place Order (For Logged-in Customer)
+-------------------------------------------------- */
 const placeOrder = async (req, reply) => {
     try {
         const body = (req.body ?? {});
-        const { userId: userIdFromBody, items } = body;
+        const { items } = body;
         if (!items || !Array.isArray(items) || items.length === 0) {
             return reply.status(400).send({ error: "Items array is required" });
         }
-        const userId = req.user?.id ?? userIdFromBody;
+        // strictly use logged-in user
+        const userId = req.user?.id;
         if (!userId) {
             return reply.status(401).send({ error: "Unauthorized: missing user" });
         }
+        const prisma = req.server.prisma;
         // Validate items
         for (const it of items) {
-            if (!it || typeof it.variantId !== "number") {
-                return reply.status(400).send({ error: "Each item must have a numeric variantId" });
-            }
-            if (!it || typeof it.quantity !== "number" || it.quantity <= 0) {
-                return reply.status(400).send({ error: `Invalid quantity for variant ${it.variantId}` });
+            if (!it ||
+                typeof it.variantId !== "number" ||
+                typeof it.quantity !== "number" ||
+                it.quantity <= 0) {
+                return reply.status(400).send({ error: "Invalid variantId or quantity" });
             }
         }
         const variantIds = items.map((i) => i.variantId);
-        const prisma = req.server.prisma;
         const variants = await prisma.variant.findMany({
             where: { id: { in: variantIds } },
             include: { product: true },
         });
-        const foundIds = new Set(variants.map((v) => v.id));
-        const missing = variantIds.filter((id) => !foundIds.has(id));
-        if (missing.length) {
-            return reply.status(400).send({ error: `Variant(s) not found: ${missing.join(", ")}` });
+        if (variants.length !== variantIds.length) {
+            return reply.status(400).send({ error: "Some product variants not found" });
         }
         const byId = new Map(variants.map((v) => [v.id, v]));
         let subtotal = new client_1.Prisma.Decimal(0);
         for (const it of items) {
             const v = byId.get(it.variantId);
-            const priceDecimal = v && v.price != null ? new client_1.Prisma.Decimal(String(v.price)) : new client_1.Prisma.Decimal(0);
-            subtotal = subtotal.add(priceDecimal.mul(it.quantity));
+            subtotal = subtotal.add(new client_1.Prisma.Decimal(v.price).mul(it.quantity));
         }
+        // Determine shipping address
         let shippingAddr = body.shippingAddress ?? null;
         if (!shippingAddr) {
             const addr = await prisma.address.findFirst({
                 where: { userId },
                 orderBy: [{ isDefault: "desc" }, { id: "asc" }],
             });
-            if (addr) {
-                shippingAddr = {
-                    name: addr.name,
-                    phone: addr.phone,
-                    line1: addr.line1,
-                    line2: addr.line2,
-                    city: addr.city,
-                    state: addr.state,
-                    postalCode: addr.postalCode,
-                    country: addr.country,
-                };
-            }
+            if (addr)
+                shippingAddr = addr;
         }
         if (!shippingAddr || !shippingAddr.postalCode) {
-            return reply.status(400).send({ error: "Shipping address (with postalCode) required" });
+            return reply.status(400).send({ error: "Shipping address required" });
         }
         const pincode = parseAndValidatePincode(shippingAddr.postalCode);
-        if (pincode === null) {
-            return reply.status(400).send({ error: "Invalid postalCode in shipping address" });
-        }
+        if (pincode === null)
+            return reply.status(400).send({ error: "Invalid postal code" });
+        // Check shipping rule
         const matchingRule = await prisma.shippingRule.findFirst({
             where: {
                 isActive: true,
@@ -87,66 +82,56 @@ const placeOrder = async (req, reply) => {
             },
             orderBy: [{ priority: "desc" }, { id: "desc" }],
         });
-        let shippingDecimal = new client_1.Prisma.Decimal(0);
-        if (matchingRule && matchingRule.charge != null) {
-            shippingDecimal = new client_1.Prisma.Decimal(String(matchingRule.charge));
-        }
-        const taxDecimal = new client_1.Prisma.Decimal(0);
-        const discountDecimal = new client_1.Prisma.Decimal(0);
-        const grandTotal = subtotal.add(shippingDecimal).add(taxDecimal).sub(discountDecimal);
-        const orderItemsCreate = items.map((it) => {
-            const v = byId.get(it.variantId);
-            const priceDec = v && v.price != null ? new client_1.Prisma.Decimal(String(v.price)) : new client_1.Prisma.Decimal(0);
-            const totalDec = priceDec.mul(it.quantity);
-            return {
-                variantId: v.id,
-                productName: v.product?.name ?? "Unknown",
-                sku: v.sku ?? undefined,
-                quantity: it.quantity,
-                price: priceDec,
-                total: totalDec,
-            };
-        });
-        const user = await prisma.user.findUnique({
-            where: { id: userId },
-            select: { id: true, name: true, email: true, phone: true },
-        });
-        // guest token for guests (if no userId; here user exists because we required it)
-        const guestAccessToken = null;
+        const shipping = matchingRule?.charge
+            ? new client_1.Prisma.Decimal(matchingRule.charge)
+            : new client_1.Prisma.Decimal(0);
+        const tax = new client_1.Prisma.Decimal(0);
+        const discount = new client_1.Prisma.Decimal(0);
+        const grandTotal = subtotal.add(shipping).add(tax).sub(discount);
+        // Create order
         const orderNumber = `ORD${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
-        const createdOrder = await prisma.$transaction(async (tx) => {
-            const created = await tx.order.create({
-                data: {
-                    orderNumber,
-                    userId,
-                    guestAccessToken,
-                    customerName: body.customerName ?? user?.name ?? "Customer",
-                    customerEmail: String(body.customerEmail ?? user?.email ?? ""),
-                    customerPhone: body.customerPhone ?? user?.phone ?? undefined,
-                    shippingAddress: {
-                        name: shippingAddr.name ?? undefined,
-                        phone: shippingAddr.phone ?? undefined,
-                        line1: shippingAddr.line1 ?? undefined,
-                        line2: shippingAddr.line2 ?? undefined,
-                        city: shippingAddr.city ?? undefined,
-                        state: shippingAddr.state ?? undefined,
-                        postalCode: String(shippingAddr.postalCode),
-                        country: shippingAddr.country ?? "IN",
-                    },
-                    subtotal,
-                    shipping: shippingDecimal,
-                    tax: taxDecimal,
-                    discount: discountDecimal,
-                    grandTotal,
-                    paymentMethod: body.paymentMethod ?? "unknown",
-                    paymentStatus: "pending",
-                    items: {
-                        create: orderItemsCreate,
-                    },
+        const createdOrder = await prisma.order.create({
+            data: {
+                orderNumber,
+                userId,
+                customerName: body.customerName ?? null,
+                customerEmail: body.customerEmail ?? null,
+                customerPhone: body.customerPhone ?? null,
+                shippingAddress: {
+                    name: shippingAddr.name ?? null,
+                    phone: shippingAddr.phone ?? null,
+                    line1: shippingAddr.line1 ?? null,
+                    line2: shippingAddr.line2 ?? null,
+                    city: shippingAddr.city ?? null,
+                    state: shippingAddr.state ?? null,
+                    postalCode: String(shippingAddr.postalCode),
+                    country: shippingAddr.country ?? "IN",
                 },
-                include: { items: true },
-            });
-            return created;
+                subtotal,
+                shipping,
+                tax,
+                discount,
+                grandTotal,
+                paymentMethod: body.paymentMethod ?? "unknown",
+                paymentStatus: "pending",
+                orderStatus: "pending",
+                pickupTime: body.pickupTime ?? "Morning", // 🕒 Added new field
+                items: {
+                    create: items.map((it) => {
+                        const v = byId.get(it.variantId);
+                        const price = new client_1.Prisma.Decimal(v.price);
+                        return {
+                            variantId: v.id,
+                            productName: v.product.name,
+                            sku: v.sku,
+                            quantity: it.quantity,
+                            price,
+                            total: price.mul(it.quantity),
+                        };
+                    }),
+                },
+            },
+            include: { items: true },
         });
         return reply.status(201).send({
             message: "Order placed successfully",
@@ -155,10 +140,7 @@ const placeOrder = async (req, reply) => {
                 ? {
                     id: matchingRule.id,
                     name: matchingRule.name,
-                    pincodeFrom: matchingRule.pincodeFrom,
-                    pincodeTo: matchingRule.pincodeTo,
                     charge: String(matchingRule.charge ?? "0"),
-                    priority: matchingRule.priority,
                 }
                 : null,
         });
@@ -172,5 +154,64 @@ const placeOrder = async (req, reply) => {
     }
 };
 exports.placeOrder = placeOrder;
-exports.default = { placeOrder: exports.placeOrder };
+/* --------------------------------------------------
+   ✅ Get My Orders (List of Customer Orders)
+-------------------------------------------------- */
+const getMyOrders = async (req, reply) => {
+    try {
+        const userId = req.user?.id ??
+            req.user?.userId ??
+            req.userId ??
+            null;
+        if (!userId) {
+            return reply.status(401).send({ error: "Unauthorized: missing user" });
+        }
+        const prisma = req.server.prisma;
+        const orders = await prisma.order.findMany({
+            where: { userId },
+            select: {
+                id: true,
+                orderNumber: true,
+                grandTotal: true,
+                paymentStatus: true,
+                orderStatus: true,
+                pickupTime: true,
+                createdAt: true,
+                items: {
+                    select: {
+                        productName: true,
+                        quantity: true,
+                        price: true,
+                    },
+                },
+            },
+            orderBy: { createdAt: "desc" },
+        });
+        // 🧩 FIXED: Explicitly typed map callback
+        return reply.send({
+            message: "Customer orders fetched successfully",
+            userId,
+            data: orders.map((o) => ({
+                id: o.id,
+                orderNumber: o.orderNumber,
+                grandTotal: String(o.grandTotal),
+                paymentStatus: o.paymentStatus,
+                orderStatus: o.orderStatus,
+                pickupTime: o.pickupTime,
+                createdAt: o.createdAt,
+                itemCount: o.items.length,
+                items: o.items,
+            })),
+        });
+    }
+    catch (err) {
+        req.log?.error?.({ err }, "getMyOrders failed");
+        return reply.status(500).send({
+            error: "Failed to fetch customer orders",
+            details: err?.message ?? String(err),
+        });
+    }
+};
+exports.getMyOrders = getMyOrders;
+exports.default = { placeOrder: exports.placeOrder, getMyOrders: exports.getMyOrders };
 //# sourceMappingURL=orderController.js.map

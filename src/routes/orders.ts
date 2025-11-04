@@ -1,19 +1,41 @@
-// src/routes/orders.ts
 import { FastifyInstance } from "fastify";
-import checkoutController from "../controllers/checkoutController";
 import ordersController from "../controllers/ordersController";
-import { adminGuard } from "../middlewares/auth";
+import orderController from "../controllers/orderController"; // new controller (placeOrder, getMyOrders)
 
+/**
+ * 🧩 Order Routes
+ */
 export default async function orderRoutes(fastify: FastifyInstance) {
-  // Place order (checkout)
-  fastify.post("/orders", async (req, reply) => checkoutController.checkout(req, reply));
-
-  // Admin: list all orders
-  fastify.get("/orders", { preHandler: [adminGuard] }, async (req, reply) =>
-    ordersController.listOrders(req, reply)
+  /* -------------------------------
+     ✅ Place order (for customers)
+  ------------------------------- */
+  fastify.post(
+    "/orders",
+    { preHandler: [fastify.authenticate] },
+    async (req, reply) => orderController.placeOrder(req, reply)
   );
 
-  // View single order (requires auth OR guest token)
+  /* -------------------------------
+     ✅ Get customer’s own orders
+  ------------------------------- */
+  fastify.get(
+    "/orders/my",
+    { preHandler: [fastify.authenticate] },
+    async (req, reply) => orderController.getMyOrders(req, reply)
+  );
+
+  /* -------------------------------
+     🔒 Admin: list all orders
+  ------------------------------- */
+  fastify.get(
+    "/orders",
+    { preHandler: [fastify.adminGuard] },
+    async (req, reply) => ordersController.listOrders(req, reply)
+  );
+
+  /* -------------------------------
+     🧾 View single order (auth OR guest)
+  ------------------------------- */
   fastify.get(
     "/orders/:orderNumber",
     {
@@ -22,7 +44,9 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           if (typeof fastify.optionalAuthOrGuestToken === "function") {
             await fastify.optionalAuthOrGuestToken(req, reply);
           } else {
-            req.log?.warn?.("auth plugin not available: optionalAuthOrGuestToken missing");
+            req.log?.warn?.(
+              "auth plugin not available: optionalAuthOrGuestToken missing"
+            );
           }
         },
       ],
@@ -30,7 +54,9 @@ export default async function orderRoutes(fastify: FastifyInstance) {
     async (req, reply) => ordersController.getOrder(req, reply)
   );
 
-  // Download invoice PDF (requires auth OR guest token)
+  /* -------------------------------
+     🧾 Download invoice PDF
+  ------------------------------- */
   fastify.get(
     "/orders/:orderNumber/invoice.pdf",
     {
@@ -39,7 +65,9 @@ export default async function orderRoutes(fastify: FastifyInstance) {
           if (typeof fastify.optionalAuthOrGuestToken === "function") {
             await fastify.optionalAuthOrGuestToken(req, reply);
           } else {
-            req.log?.warn?.("auth plugin not available: optionalAuthOrGuestToken missing");
+            req.log?.warn?.(
+              "auth plugin not available: optionalAuthOrGuestToken missing"
+            );
           }
         },
       ],

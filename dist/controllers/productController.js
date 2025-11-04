@@ -677,7 +677,9 @@ exports.createProduct = createProduct;
 const listProducts = async (request, reply) => {
     try {
         const q = request.query.q;
-        const limit = Math.min(parseInt(request.query.limit || "20", 10), 100);
+        // 👇 Allow up to 1000 products by default
+        const limitParam = parseInt(request.query.limit);
+        const limit = Number.isFinite(limitParam) ? Math.min(limitParam, 1000) : 1000;
         const page = Math.max(parseInt(request.query.page || "1", 10), 1);
         const where = {
             ...(q
@@ -688,9 +690,14 @@ const listProducts = async (request, reply) => {
                     ],
                 }
                 : {}),
-            ...(request.query && request.query.categoryId ? { categoryId: Number(request.query.categoryId) } : {}),
-            ...(request.query && request.query.isActive ? { isActive: request.query.isActive === "true" } : {}),
+            ...(request.query && request.query.categoryId
+                ? { categoryId: Number(request.query.categoryId) }
+                : {}),
+            ...(request.query && request.query.isActive
+                ? { isActive: request.query.isActive === "true" }
+                : {}),
         };
+        // 👇 Now fetch all matching products (up to 1000)
         const products = await prisma.product.findMany({
             where,
             include: { variants: true, images: true, category: true },
@@ -701,22 +708,14 @@ const listProducts = async (request, reply) => {
         const mapped = products.map((p) => {
             const prod = serializeProductSafe(p);
             if (STORAGE_DRIVER === "local" && PUBLIC_BASE_URL && prod.images) {
-                prod.images = prod.images.map((img) => ({ ...img, url: buildLocalUrl(img.url) }));
+                prod.images = prod.images.map((img) => ({
+                    ...img,
+                    url: buildLocalUrl(img.url),
+                }));
             }
             return prod;
         });
-        const safe = safeClone(mapped);
-        if (!safe) {
-            safeLogError(request, { message: "Failed to safe-clone product list response" }, "safeClone(list)");
-            return reply.code(500).send({ error: "Internal error (response serialization failed)" });
-        }
-        const first = safe[0];
-        const cyclePath = first ? findCycle(first) : null;
-        if (cyclePath) {
-            safeLogError(request, { message: `circular reference detected: ${cyclePath}` }, "findCycle(list)");
-            return reply.code(500).send({ error: "Circular reference detected in response", detail: cyclePath });
-        }
-        return reply.send({ data: safe });
+        return reply.send({ data: safeClone(mapped) });
     }
     catch (err) {
         safeLogError(request, err, "listProducts");

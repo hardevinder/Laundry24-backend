@@ -1,4 +1,3 @@
-// src/routes/categories.ts
 import { FastifyInstance } from "fastify";
 import {
   listCategories,
@@ -7,16 +6,19 @@ import {
   updateCategory,
   deleteCategory,
 } from "../controllers/categoryController";
-import { adminGuard } from "../middlewares/auth";
 
 export default async function categoriesRoutes(app: FastifyInstance) {
-  // Public
+  /* -------------------------------
+     🌍 Public Category Routes
+  ------------------------------- */
   app.get("/categories", listCategories);
   app.get("/categories/:slug", getCategoryBySlug);
 
-  // Admin
-  app.get("/admin/categories", { preHandler: adminGuard }, listCategories); // 👈 add this
-  app.post("/admin/categories", { preHandler: adminGuard }, createCategory);
-  app.put("/admin/categories/:id", { preHandler: adminGuard }, updateCategory);
-  app.delete("/admin/categories/:id", { preHandler: adminGuard }, deleteCategory);
+  /* -------------------------------
+     🔒 Admin Category Routes
+  ------------------------------- */
+  app.get("/admin/categories", { preHandler: [app.adminGuard] }, listCategories);
+  app.post("/admin/categories", { preHandler: [app.adminGuard] }, createCategory);
+  app.put("/admin/categories/:id", { preHandler: [app.adminGuard] }, updateCategory);
+  app.delete("/admin/categories/:id", { preHandler: [app.adminGuard] }, deleteCategory);
 }

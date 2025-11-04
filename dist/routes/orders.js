@@ -4,15 +4,27 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = orderRoutes;
-const checkoutController_1 = __importDefault(require("../controllers/checkoutController"));
 const ordersController_1 = __importDefault(require("../controllers/ordersController"));
-const auth_1 = require("../middlewares/auth");
+const orderController_1 = __importDefault(require("../controllers/orderController")); // new controller (placeOrder, getMyOrders)
+/**
+ * 🧩 Order Routes
+ */
 async function orderRoutes(fastify) {
-    // Place order (checkout)
-    fastify.post("/orders", async (req, reply) => checkoutController_1.default.checkout(req, reply));
-    // Admin: list all orders
-    fastify.get("/orders", { preHandler: [auth_1.adminGuard] }, async (req, reply) => ordersController_1.default.listOrders(req, reply));
-    // View single order (requires auth OR guest token)
+    /* -------------------------------
+       ✅ Place order (for customers)
+    ------------------------------- */
+    fastify.post("/orders", { preHandler: [fastify.authenticate] }, async (req, reply) => orderController_1.default.placeOrder(req, reply));
+    /* -------------------------------
+       ✅ Get customer’s own orders
+    ------------------------------- */
+    fastify.get("/orders/my", { preHandler: [fastify.authenticate] }, async (req, reply) => orderController_1.default.getMyOrders(req, reply));
+    /* -------------------------------
+       🔒 Admin: list all orders
+    ------------------------------- */
+    fastify.get("/orders", { preHandler: [fastify.adminGuard] }, async (req, reply) => ordersController_1.default.listOrders(req, reply));
+    /* -------------------------------
+       🧾 View single order (auth OR guest)
+    ------------------------------- */
     fastify.get("/orders/:orderNumber", {
         preHandler: [
             async (req, reply) => {
@@ -25,7 +37,9 @@ async function orderRoutes(fastify) {
             },
         ],
     }, async (req, reply) => ordersController_1.default.getOrder(req, reply));
-    // Download invoice PDF (requires auth OR guest token)
+    /* -------------------------------
+       🧾 Download invoice PDF
+    ------------------------------- */
     fastify.get("/orders/:orderNumber/invoice.pdf", {
         preHandler: [
             async (req, reply) => {

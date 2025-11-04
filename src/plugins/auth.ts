@@ -1,10 +1,14 @@
 // src/plugins/auth.ts
-import { FastifyPluginAsync } from "fastify";
+import fp from "fastify-plugin";
+import fastifyJwt from "@fastify/jwt";
+import { FastifyReply, FastifyRequest } from "fastify";
 
 declare module "fastify" {
   interface FastifyInstance {
-    requireAuth: (request: any, reply: any) => Promise<void>;
-    optionalAuthOrGuestToken: (request: any, reply: any) => Promise<void>;
+    authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    adminGuard: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    requireAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    optionalAuthOrGuestToken: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 
   interface FastifyRequest {
@@ -13,77 +17,75 @@ declare module "fastify" {
   }
 }
 
-const authPlugin: FastifyPluginAsync = async (fastify) => {
-  // ensure request properties exist as nullable so handlers can read them
-  // use decorateRequest to add typed properties at runtime
-  // @ts-ignore - decorateRequest added property typings above via module augmentation
-  fastify.decorateRequest("userId", null);
-  // @ts-ignore
-  fastify.decorateRequest("guestToken", null);
+export default fp(async function (fastify) {
+  // ✅ JWT setup
+  fastify.register(fastifyJwt, {
+    secret: process.env.JWT_SECRET || "super-secret",
+  });
 
-  /**
-   * requireAuth - preHandler that enforces valid JWT and sets request.userId
-   */
-  fastify.decorate("requireAuth", async (request: any, reply: any) => {
-    try {
-      // fastify-jwt exposes request.jwtVerify()
-      const payload: any = await request.jwtVerify();
-      // try common fields: userId or sub
-      const uid = payload?.userId ?? (payload?.sub ? Number(payload.sub) : undefined);
-      if (!uid) {
-        reply.code(401).send({ error: "Invalid token payload" });
-        return;
+  // 🔸 Basic user auth
+  fastify.decorate(
+    "authenticate",
+    async function (req: FastifyRequest, reply: FastifyReply) {
+      try {
+        await req.jwtVerify();
+      } catch {
+        return reply.status(401).send({ error: "Unauthorized" });
       }
-      request.userId = Number(uid);
-    } catch (err: any) {
-      // jwtVerify throws on invalid/missing token
-      request.log?.info?.({ err }, "requireAuth: jwt verify failed");
+    }
+  );
+
+  // 🔸 Admin-only guard
+  fastify.decorate(
+    "adminGuard",
+    async function (req: FastifyRequest, reply: FastifyReply) {
+      try {
+        await req.jwtVerify();
+        if (!req.user?.isAdmin) {
+          return reply.status(403).send({ error: "Forbidden: Admins only" });
+        }
+      } catch {
+        return reply.status(401).send({ error: "Unauthorized" });
+      }
+    }
+  );
+
+  // 🔸 requireAuth (same as authenticate but stores userId)
+  fastify.decorate("requireAuth", async (req: any, reply: any) => {
+    try {
+      const payload: any = await req.jwtVerify();
+      const uid = payload?.userId ?? payload?.id ?? payload?.sub;
+      if (!uid) return reply.code(401).send({ error: "Invalid token" });
+      req.userId = Number(uid);
+    } catch (err) {
+      req.log?.info?.({ err }, "requireAuth failed");
       reply.code(401).send({ error: "Unauthorized" });
     }
   });
 
-  /**
-   * optionalAuthOrGuestToken - preHandler that attempts to extract auth info,
-   * but does NOT reject; it simply sets request.userId or request.guestToken if available.
-   */
-  fastify.decorate("optionalAuthOrGuestToken", async (request: any, _reply: any) => {
-    // try JWT verify silently
+  // 🔸 optionalAuthOrGuestToken
+  fastify.decorate("optionalAuthOrGuestToken", async (req: any, _reply: any) => {
     try {
-      const payload: any = await request.jwtVerify();
-      const uid = payload?.userId ?? (payload?.sub ? Number(payload.sub) : undefined);
-      if (uid) request.userId = Number(uid);
+      const payload: any = await req.jwtVerify();
+      const uid = payload?.userId ?? payload?.id ?? payload?.sub;
+      if (uid) req.userId = Number(uid);
     } catch (err) {
-      // ignore: no valid JWT
-      request.log?.debug?.({ err }, "optionalAuthOrGuestToken: jwt not present/invalid (ignored)");
+      req.log?.debug?.("optionalAuth: no valid JWT");
     }
 
-    // guest token may be in ?token=... or header x-guest-token or Authorization: Guest <token>
-    const qtoken = (request.query && (request.query as any).token) || null;
-
-    // header keys may be lowercased by the runtime; check both common variants safely
+    const qtoken = (req.query && (req.query as any).token) || null;
     const hdrToken =
-      (request.headers && (request.headers["x-guest-token"] || request.headers["X-Guest-Token"])) || null;
-
+      (req.headers && (req.headers["x-guest-token"] || req.headers["X-Guest-Token"])) || null;
     const authHeaderRaw =
-      (request.headers && (request.headers.authorization || (request.headers as any).Authorization)) || null;
+      (req.headers && (req.headers.authorization || (req.headers as any).Authorization)) || null;
 
-    if (qtoken && typeof qtoken === "string") {
-      request.guestToken = qtoken;
-      return;
-    }
-    if (hdrToken && typeof hdrToken === "string") {
-      request.guestToken = hdrToken;
-      return;
-    }
-    if (typeof authHeaderRaw === "string") {
-      // safe split — authHeaderRaw is string so parts will be an array
+    if (qtoken && typeof qtoken === "string") req.guestToken = qtoken;
+    else if (hdrToken && typeof hdrToken === "string") req.guestToken = hdrToken;
+    else if (typeof authHeaderRaw === "string") {
       const parts = authHeaderRaw.split(/\s+/);
       if (Array.isArray(parts) && parts.length === 2 && parts[0]?.toLowerCase() === "guest") {
-        request.guestToken = parts[1];
+        req.guestToken = parts[1];
       }
     }
-    // intentionally do not reply/throw; this function is permissive
   });
-};
-
-export default authPlugin;
+});

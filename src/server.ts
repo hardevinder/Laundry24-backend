@@ -1,7 +1,7 @@
 // src/server.ts
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import fastifyJwt from "@fastify/jwt";
+// import fastifyJwt from "@fastify/jwt";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import fastifyMultipart from "@fastify/multipart";
@@ -27,9 +27,11 @@ import * as shippingCtrl from "./controllers/admin/shippingRulesController"; // 
 import adminOrdersRoutes from "./routes/admin/orders"; // admin orders routes
 
 import authPlugin from "./plugins/auth"; // optionalAuthOrGuestToken / requireAuth
+import adminInquiriesRoutes from "./routes/admin/inquiries";
+
 
 const isProd = process.env.NODE_ENV === "production";
-const PORT = Number(process.env.PORT || 5000);
+const PORT = Number(process.env.PORT || 7121);
 const HOST = process.env.HOST || "0.0.0.0";
 
 // Comma-separated list of allowed frontend origins in prod
@@ -93,9 +95,9 @@ async function start() {
     });
 
     // 4) JWT — Bearer tokens
-    await app.register(fastifyJwt, {
-      secret: process.env.JWT_SECRET || "supersecret",
-    });
+    // await app.register(fastifyJwt, {
+    //   secret: process.env.JWT_SECRET || "supersecret",
+    // });
 
     // register auth helpers plugin (decorate with optionalAuthOrGuestToken / requireAuth)
     await app.register(authPlugin);
@@ -251,6 +253,8 @@ async function start() {
     // These routes include a preHandler that checks request.user?.isAdmin (see route files).
     app.register(shippingRulesRoutes, { prefix: "/api/admin" });
     app.register(adminOrdersRoutes, { prefix: "/api/admin" }); // admin orders routes
+    app.register(adminInquiriesRoutes, { prefix: "/api" });
+
 
     /**
      * Public shipping calculation endpoint

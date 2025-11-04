@@ -1,4 +1,3 @@
-// src/routes/admin/orders.ts
 import { FastifyInstance, FastifyPluginOptions } from "fastify";
 import {
   listOrders,
@@ -8,8 +7,8 @@ import {
   shipOrder,
   cancelOrder,
 } from "../../controllers/adminOrdersController";
-import { adminGuard } from "../../middlewares/auth";
 
+// 🧩 Reusable schema for :id parameter
 const idParamSchema = {
   type: "object",
   required: ["id"],
@@ -20,23 +19,35 @@ export default async function adminOrdersRoutes(
   fastify: FastifyInstance,
   _opts: FastifyPluginOptions
 ): Promise<void> {
+  /* -----------------------------
+     🔒 Admin: list all orders
+  ----------------------------- */
   fastify.get(
     "/orders",
-    { preHandler: adminGuard, schema: ({ tags: ["admin", "orders"] } as any) },
+    { preHandler: [fastify.adminGuard], schema: { tags: ["admin", "orders"] } as any },
     listOrders
   );
 
+  /* -----------------------------
+     🔒 Admin: get single order
+  ----------------------------- */
   fastify.get(
     "/orders/:id",
-    { preHandler: adminGuard, schema: ({ tags: ["admin", "orders"], params: idParamSchema } as any) },
+    {
+      preHandler: [fastify.adminGuard],
+      schema: { tags: ["admin", "orders"], params: idParamSchema } as any,
+    },
     getOrder
   );
 
+  /* -----------------------------
+     🔒 Admin: update order status
+  ----------------------------- */
   fastify.patch(
     "/orders/:id/status",
     {
-      preHandler: adminGuard,
-      schema: ({
+      preHandler: [fastify.adminGuard],
+      schema: {
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
@@ -49,35 +60,44 @@ export default async function adminOrdersRoutes(
             },
           },
         },
-      } as any),
+      } as any,
     },
     updateOrderStatus
   );
 
+  /* -----------------------------
+     🔒 Admin: update payment status
+  ----------------------------- */
   fastify.patch(
     "/orders/:id/payment",
     {
-      preHandler: adminGuard,
-      schema: ({
+      preHandler: [fastify.adminGuard],
+      schema: {
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
           type: "object",
           required: ["paymentStatus"],
           properties: {
-            paymentStatus: { type: "string", enum: ["pending", "paid", "failed", "refunded"] },
+            paymentStatus: {
+              type: "string",
+              enum: ["pending", "paid", "failed", "refunded"],
+            },
           },
         },
-      } as any),
+      } as any,
     },
     updatePaymentStatus
   );
 
+  /* -----------------------------
+     🔒 Admin: mark order as shipped
+  ----------------------------- */
   fastify.patch(
     "/orders/:id/ship",
     {
-      preHandler: adminGuard,
-      schema: ({
+      preHandler: [fastify.adminGuard],
+      schema: {
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
@@ -86,23 +106,26 @@ export default async function adminOrdersRoutes(
             trackingNumber: { type: ["string", "null"] },
           },
         },
-      } as any),
+      } as any,
     },
     shipOrder
   );
 
+  /* -----------------------------
+     🔒 Admin: cancel order
+  ----------------------------- */
   fastify.post(
     "/orders/:id/cancel",
     {
-      preHandler: adminGuard,
-      schema: ({
+      preHandler: [fastify.adminGuard],
+      schema: {
         tags: ["admin", "orders"],
         params: idParamSchema,
         body: {
           type: "object",
           properties: { restock: { type: "boolean", default: true } },
         },
-      } as any),
+      } as any,
     },
     cancelOrder
   );

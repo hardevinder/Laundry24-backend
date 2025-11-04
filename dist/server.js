@@ -39,7 +39,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // src/server.ts
 const fastify_1 = __importDefault(require("fastify"));
 const cors_1 = __importDefault(require("@fastify/cors"));
-const jwt_1 = __importDefault(require("@fastify/jwt"));
+// import fastifyJwt from "@fastify/jwt";
 const helmet_1 = __importDefault(require("@fastify/helmet"));
 const rate_limit_1 = __importDefault(require("@fastify/rate-limit"));
 const multipart_1 = __importDefault(require("@fastify/multipart"));
@@ -61,6 +61,7 @@ const shippingRules_1 = __importDefault(require("./routes/admin/shippingRules"))
 const shippingCtrl = __importStar(require("./controllers/admin/shippingRulesController")); // for computeShippingForPincode
 const orders_2 = __importDefault(require("./routes/admin/orders")); // admin orders routes
 const auth_2 = __importDefault(require("./plugins/auth")); // optionalAuthOrGuestToken / requireAuth
+const inquiries_1 = __importDefault(require("./routes/admin/inquiries"));
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 5000);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -118,9 +119,9 @@ async function start() {
             maxAge: 86400,
         });
         // 4) JWT — Bearer tokens
-        await app.register(jwt_1.default, {
-            secret: process.env.JWT_SECRET || "supersecret",
-        });
+        // await app.register(fastifyJwt, {
+        //   secret: process.env.JWT_SECRET || "supersecret",
+        // });
         // register auth helpers plugin (decorate with optionalAuthOrGuestToken / requireAuth)
         await app.register(auth_2.default);
         // 5) Prisma
@@ -269,6 +270,7 @@ async function start() {
         // These routes include a preHandler that checks request.user?.isAdmin (see route files).
         app.register(shippingRules_1.default, { prefix: "/api/admin" });
         app.register(orders_2.default, { prefix: "/api/admin" }); // admin orders routes
+        app.register(inquiries_1.default, { prefix: "/api" });
         /**
          * Public shipping calculation endpoint
          * GET /api/shipping/calculate?pincode=XXXXX&subtotal=NNN

@@ -710,8 +710,13 @@ export const createProduct = async (request: FastifyRequest, reply: FastifyReply
 export const listProducts = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const q = (request.query as any).q as string | undefined;
-    const limit = Math.min(parseInt(((request.query as any).limit as string) || "20", 10), 100);
+
+    // 👇 Allow up to 1000 products by default
+    const limitParam = parseInt((request.query as any).limit as string);
+    const limit = Number.isFinite(limitParam) ? Math.min(limitParam, 1000) : 1000;
+
     const page = Math.max(parseInt(((request.query as any).page as string) || "1", 10), 1);
+
     const where: Prisma.ProductWhereInput = {
       ...(q
         ? {
@@ -721,10 +726,15 @@ export const listProducts = async (request: FastifyRequest, reply: FastifyReply)
             ],
           }
         : {}),
-      ...(request.query && (request.query as any).categoryId ? { categoryId: Number((request.query as any).categoryId) } : {}),
-      ...(request.query && (request.query as any).isActive ? { isActive: (request.query as any).isActive === "true" } : {}),
+      ...(request.query && (request.query as any).categoryId
+        ? { categoryId: Number((request.query as any).categoryId) }
+        : {}),
+      ...(request.query && (request.query as any).isActive
+        ? { isActive: (request.query as any).isActive === "true" }
+        : {}),
     };
 
+    // 👇 Now fetch all matching products (up to 1000)
     const products = await prisma.product.findMany({
       where,
       include: { variants: true, images: true, category: true },
@@ -736,25 +746,15 @@ export const listProducts = async (request: FastifyRequest, reply: FastifyReply)
     const mapped = products.map((p) => {
       const prod = serializeProductSafe(p);
       if (STORAGE_DRIVER === "local" && PUBLIC_BASE_URL && prod.images) {
-        prod.images = prod.images.map((img: any) => ({ ...img, url: buildLocalUrl(img.url) }));
+        prod.images = prod.images.map((img: any) => ({
+          ...img,
+          url: buildLocalUrl(img.url),
+        }));
       }
       return prod;
     });
 
-    const safe = safeClone(mapped);
-    if (!safe) {
-      safeLogError(request, { message: "Failed to safe-clone product list response" }, "safeClone(list)");
-      return reply.code(500).send({ error: "Internal error (response serialization failed)" });
-    }
-
-    const first = safe[0];
-    const cyclePath = first ? findCycle(first) : null;
-    if (cyclePath) {
-      safeLogError(request, { message: `circular reference detected: ${cyclePath}` }, "findCycle(list)");
-      return reply.code(500).send({ error: "Circular reference detected in response", detail: cyclePath });
-    }
-
-    return reply.send({ data: safe });
+    return reply.send({ data: safeClone(mapped) });
   } catch (err: any) {
     safeLogError(request, err, "listProducts");
     return reply.code(500).send({ error: err?.message || "Internal error" });

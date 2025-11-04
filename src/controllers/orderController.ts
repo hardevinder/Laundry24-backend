@@ -1,8 +1,9 @@
-// src/controllers/orderController.ts
 import { FastifyRequest, FastifyReply } from "fastify";
-import { Prisma } from "@prisma/client"; // Prisma.Decimal
-// import { v4 as uuidv4 } from "uuid";
+import { Prisma, Order } from "@prisma/client"; // Prisma.Decimal, Order type
 
+/* ---------------------------
+   Type: PlaceOrderBody
+--------------------------- */
 type PlaceOrderBody = {
   userId?: number;
   items: { variantId: number; quantity: number }[];
@@ -21,8 +22,12 @@ type PlaceOrderBody = {
   customerEmail?: string;
   customerPhone?: string;
   customerName?: string;
+  pickupTime?: string; // "Morning" | "Evening" | "Night" | "SameDay"
 };
 
+/* ---------------------------
+   Helper: Validate Pincode
+--------------------------- */
 function parseAndValidatePincode(value: any): number | null {
   if (value === undefined || value === null) return null;
   const s = String(value).replace(/\D/g, "");
@@ -33,82 +38,74 @@ function parseAndValidatePincode(value: any): number | null {
   return n;
 }
 
+/* --------------------------------------------------
+   ✅ Place Order (For Logged-in Customer)
+-------------------------------------------------- */
 export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
     const body = (req.body ?? {}) as PlaceOrderBody;
-    const { userId: userIdFromBody, items } = body;
+    const { items } = body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return reply.status(400).send({ error: "Items array is required" });
     }
 
-    const userId = (req as any).user?.id ?? userIdFromBody;
+    // strictly use logged-in user
+    const userId = (req as any).user?.id;
     if (!userId) {
       return reply.status(401).send({ error: "Unauthorized: missing user" });
     }
 
+    const prisma = (req.server as any).prisma;
+
     // Validate items
     for (const it of items) {
-      if (!it || typeof it.variantId !== "number") {
-        return reply.status(400).send({ error: "Each item must have a numeric variantId" });
-      }
-      if (!it || typeof it.quantity !== "number" || it.quantity <= 0) {
-        return reply.status(400).send({ error: `Invalid quantity for variant ${it.variantId}` });
+      if (
+        !it ||
+        typeof it.variantId !== "number" ||
+        typeof it.quantity !== "number" ||
+        it.quantity <= 0
+      ) {
+        return reply.status(400).send({ error: "Invalid variantId or quantity" });
       }
     }
 
     const variantIds = items.map((i) => i.variantId);
-    const prisma = (req.server as any).prisma as any;
-
-    const variants: any[] = await prisma.variant.findMany({
+    const variants = await prisma.variant.findMany({
       where: { id: { in: variantIds } },
       include: { product: true },
     });
 
-    const foundIds = new Set(variants.map((v: any) => v.id));
-    const missing = variantIds.filter((id) => !foundIds.has(id));
-    if (missing.length) {
-      return reply.status(400).send({ error: `Variant(s) not found: ${missing.join(", ")}` });
+    if (variants.length !== variantIds.length) {
+      return reply.status(400).send({ error: "Some product variants not found" });
     }
 
     const byId = new Map<number, any>(variants.map((v: any) => [v.id, v]));
-
     let subtotal = new Prisma.Decimal(0);
     for (const it of items) {
       const v = byId.get(it.variantId);
-      const priceDecimal = v && v.price != null ? new Prisma.Decimal(String(v.price)) : new Prisma.Decimal(0);
-      subtotal = subtotal.add(priceDecimal.mul(it.quantity));
+      subtotal = subtotal.add(new Prisma.Decimal(v.price).mul(it.quantity));
     }
 
+    // Determine shipping address
     let shippingAddr = body.shippingAddress ?? null;
     if (!shippingAddr) {
       const addr = await prisma.address.findFirst({
         where: { userId },
         orderBy: [{ isDefault: "desc" }, { id: "asc" }],
       });
-      if (addr) {
-        shippingAddr = {
-          name: addr.name,
-          phone: addr.phone,
-          line1: addr.line1,
-          line2: addr.line2,
-          city: addr.city,
-          state: addr.state,
-          postalCode: addr.postalCode,
-          country: addr.country,
-        };
-      }
+      if (addr) shippingAddr = addr;
     }
 
     if (!shippingAddr || !shippingAddr.postalCode) {
-      return reply.status(400).send({ error: "Shipping address (with postalCode) required" });
+      return reply.status(400).send({ error: "Shipping address required" });
     }
 
     const pincode = parseAndValidatePincode(shippingAddr.postalCode);
-    if (pincode === null) {
-      return reply.status(400).send({ error: "Invalid postalCode in shipping address" });
-    }
+    if (pincode === null)
+      return reply.status(400).send({ error: "Invalid postal code" });
 
+    // Check shipping rule
     const matchingRule = await prisma.shippingRule.findFirst({
       where: {
         isActive: true,
@@ -118,74 +115,58 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
       orderBy: [{ priority: "desc" }, { id: "desc" }],
     });
 
-    let shippingDecimal = new Prisma.Decimal(0);
-    if (matchingRule && matchingRule.charge != null) {
-      shippingDecimal = new Prisma.Decimal(String(matchingRule.charge));
-    }
+    const shipping = matchingRule?.charge
+      ? new Prisma.Decimal(matchingRule.charge)
+      : new Prisma.Decimal(0);
+    const tax = new Prisma.Decimal(0);
+    const discount = new Prisma.Decimal(0);
+    const grandTotal = subtotal.add(shipping).add(tax).sub(discount);
 
-    const taxDecimal = new Prisma.Decimal(0);
-    const discountDecimal = new Prisma.Decimal(0);
-
-    const grandTotal = subtotal.add(shippingDecimal).add(taxDecimal).sub(discountDecimal);
-
-    const orderItemsCreate = items.map((it) => {
-      const v = byId.get(it.variantId);
-      const priceDec = v && v.price != null ? new Prisma.Decimal(String(v.price)) : new Prisma.Decimal(0);
-      const totalDec = priceDec.mul(it.quantity);
-      return {
-        variantId: v.id,
-        productName: v.product?.name ?? "Unknown",
-        sku: v.sku ?? undefined,
-        quantity: it.quantity,
-        price: priceDec,
-        total: totalDec,
-      };
-    });
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, name: true, email: true, phone: true },
-    });
-
-    // guest token for guests (if no userId; here user exists because we required it)
-    const guestAccessToken = null;
-
+    // Create order
     const orderNumber = `ORD${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
 
-    const createdOrder = await prisma.$transaction(async (tx: any) => {
-      const created = await tx.order.create({
-        data: {
-          orderNumber,
-          userId,
-          guestAccessToken,
-          customerName: body.customerName ?? user?.name ?? "Customer",
-          customerEmail: String(body.customerEmail ?? user?.email ?? ""),
-          customerPhone: body.customerPhone ?? user?.phone ?? undefined,
-          shippingAddress: {
-            name: shippingAddr.name ?? undefined,
-            phone: shippingAddr.phone ?? undefined,
-            line1: shippingAddr.line1 ?? undefined,
-            line2: shippingAddr.line2 ?? undefined,
-            city: shippingAddr.city ?? undefined,
-            state: shippingAddr.state ?? undefined,
-            postalCode: String(shippingAddr.postalCode),
-            country: shippingAddr.country ?? "IN",
-          },
-          subtotal,
-          shipping: shippingDecimal,
-          tax: taxDecimal,
-          discount: discountDecimal,
-          grandTotal,
-          paymentMethod: body.paymentMethod ?? "unknown",
-          paymentStatus: "pending",
-          items: {
-            create: orderItemsCreate,
-          },
+    const createdOrder = await prisma.order.create({
+      data: {
+        orderNumber,
+        userId,
+        customerName: body.customerName ?? null,
+        customerEmail: body.customerEmail ?? null,
+        customerPhone: body.customerPhone ?? null,
+        shippingAddress: {
+          name: shippingAddr.name ?? null,
+          phone: shippingAddr.phone ?? null,
+          line1: shippingAddr.line1 ?? null,
+          line2: shippingAddr.line2 ?? null,
+          city: shippingAddr.city ?? null,
+          state: shippingAddr.state ?? null,
+          postalCode: String(shippingAddr.postalCode),
+          country: shippingAddr.country ?? "IN",
         },
-        include: { items: true },
-      });
-
-      return created;
+        subtotal,
+        shipping,
+        tax,
+        discount,
+        grandTotal,
+        paymentMethod: body.paymentMethod ?? "unknown",
+        paymentStatus: "pending",
+        orderStatus: "pending",
+        pickupTime: body.pickupTime ?? "Morning", // 🕒 Added new field
+        items: {
+          create: items.map((it) => {
+            const v = byId.get(it.variantId);
+            const price = new Prisma.Decimal(v.price);
+            return {
+              variantId: v.id,
+              productName: v.product.name,
+              sku: v.sku,
+              quantity: it.quantity,
+              price,
+              total: price.mul(it.quantity),
+            };
+          }),
+        },
+      },
+      include: { items: true },
     });
 
     return reply.status(201).send({
@@ -195,10 +176,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
         ? {
             id: matchingRule.id,
             name: matchingRule.name,
-            pincodeFrom: matchingRule.pincodeFrom,
-            pincodeTo: matchingRule.pincodeTo,
             charge: String(matchingRule.charge ?? "0"),
-            priority: matchingRule.priority,
           }
         : null,
     });
@@ -211,4 +189,68 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
   }
 };
 
-export default { placeOrder };
+/* --------------------------------------------------
+   ✅ Get My Orders (List of Customer Orders)
+-------------------------------------------------- */
+export const getMyOrders = async (req: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const userId =
+      (req as any).user?.id ??
+      (req as any).user?.userId ??
+      (req as any).userId ??
+      null;
+
+    if (!userId) {
+      return reply.status(401).send({ error: "Unauthorized: missing user" });
+    }
+
+    const prisma = (req.server as any).prisma;
+
+    const orders = await prisma.order.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        orderNumber: true,
+        grandTotal: true,
+        paymentStatus: true,
+        orderStatus: true,
+        pickupTime: true,
+        createdAt: true,
+        items: {
+          select: {
+            productName: true,
+            quantity: true,
+            price: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // 🧩 FIXED: Explicitly typed map callback
+    return reply.send({
+      message: "Customer orders fetched successfully",
+      userId,
+      data: orders.map((o: Order & { items: { productName: string; quantity: number; price: Prisma.Decimal }[] }) => ({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        grandTotal: String(o.grandTotal),
+        paymentStatus: o.paymentStatus,
+        orderStatus: o.orderStatus,
+        pickupTime: o.pickupTime,
+        createdAt: o.createdAt,
+        itemCount: o.items.length,
+        items: o.items,
+      })),
+    });
+  } catch (err: any) {
+    (req as any).log?.error?.({ err }, "getMyOrders failed");
+
+    return reply.status(500).send({
+      error: "Failed to fetch customer orders",
+      details: err?.message ?? String(err),
+    });
+  }
+};
+
+export default { placeOrder, getMyOrders };
