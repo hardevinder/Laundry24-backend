@@ -79,20 +79,34 @@ async function start() {
     });
 
     // 3) CORS — allow edit verbs + Authorization header
-    await app.register(cors, {
-      origin: (origin, cb) => {
-        // allow server-to-server requests (no origin like curl)
-        if (!origin) return cb(null, true);
+  await app.register(cors, {
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // allow server-to-server or curl
 
-        const allowed = FRONTEND_ORIGINS.length > 0 && FRONTEND_ORIGINS.includes(origin);
-        cb(null, allowed);
-      },
-      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "Cookie"],
-      exposedHeaders: ["set-cookie"],
-      credentials: true,
-      maxAge: 86400,
-    });
+    const allowedOrigins = [
+      "https://laundry24.ca",
+      "https://www.laundry24.ca",
+      "https://laundry24.in",
+      "https://www.laundry24.in",
+      "http://localhost:3000", // for local dev
+      "http://127.0.0.1:3000",
+    ];
+
+    if (allowedOrigins.includes(origin)) {
+      cb(null, true);
+    } else {
+      // Log but still allow
+      console.warn("⚠️ CORS: Unlisted origin =>", origin);
+      cb(null, true);
+    }
+  },
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "Cookie"],
+  exposedHeaders: ["set-cookie"],
+  credentials: true,
+  maxAge: 86400,
+});
+
 
     // 4) JWT — Bearer tokens
     // await app.register(fastifyJwt, {
