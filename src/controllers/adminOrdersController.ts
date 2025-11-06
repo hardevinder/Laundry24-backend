@@ -48,6 +48,9 @@ async function updateOrderFieldSafe(id: number, field: "orderStatus" | "paymentS
 /* ---------------------------
    LIST ORDERS (with filters)
 --------------------------- */
+/* ---------------------------
+   LIST ORDERS (with filters)
+--------------------------- */
 export const listOrders = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const q = (request.query as any)?.q ?? undefined;
@@ -77,7 +80,19 @@ export const listOrders = async (request: FastifyRequest, reply: FastifyReply) =
     const [orders, total] = await Promise.all([
       prisma.order.findMany({
         where,
-        include: { items: true, user: true },
+        include: {
+          items: {
+            select: {
+              id: true,
+              quantity: true,
+              remarks: true, // ✅ include remarks
+              variant: {
+                select: { id: true, name: true },
+              },
+            },
+          },
+          user: true,
+        },
         orderBy: { createdAt: "desc" },
         skip,
         take: pageSize,
@@ -90,6 +105,7 @@ export const listOrders = async (request: FastifyRequest, reply: FastifyReply) =
     return reply.code(500).send({ error: err.message || "Internal error" });
   }
 };
+
 
 /* ---------------------------
    GET SINGLE ORDER

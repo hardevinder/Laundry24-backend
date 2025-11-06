@@ -7,7 +7,7 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 type JwtPayload = { id: number; email: string; isAdmin: boolean };
 
 /* =========================
-   👤 Signup (auto-login, header token)
+   👤 Signup (auto-login)
 ========================= */
 export const signup = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -35,6 +35,7 @@ export const signup = async (req: FastifyRequest, reply: FastifyReply) => {
       select: { id: true, name: true, email: true, isAdmin: true },
     });
 
+    // ✅ Use req.server.jwt.sign instead of req.jwt.sign
     const accessToken = req.server.jwt.sign(
       { id: user.id, email: user.email, isAdmin: user.isAdmin } as JwtPayload,
       { expiresIn: "7d" }
@@ -46,6 +47,7 @@ export const signup = async (req: FastifyRequest, reply: FastifyReply) => {
       accessToken,
     });
   } catch (error) {
+    req.log.error(error);
     return reply.status(500).send({
       error: "Signup failed",
       details: (error as Error).message,
@@ -54,7 +56,7 @@ export const signup = async (req: FastifyRequest, reply: FastifyReply) => {
 };
 
 /* =========================
-   🔐 Login (header token)
+   🔐 Login (JWT Bearer)
 ========================= */
 export const login = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -76,7 +78,6 @@ export const login = async (req: FastifyRequest, reply: FastifyReply) => {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
-    // If account is Google-based, block password login (adjust if you want both)
     if (userRecord.provider === "google" || !userRecord.password) {
       return reply.status(400).send({ error: "Use Google login for this account" });
     }
@@ -86,6 +87,7 @@ export const login = async (req: FastifyRequest, reply: FastifyReply) => {
       return reply.status(401).send({ error: "Invalid credentials" });
     }
 
+    // ✅ Use req.server.jwt.sign
     const accessToken = req.server.jwt.sign(
       { id: userRecord.id, email: userRecord.email, isAdmin: userRecord.isAdmin } as JwtPayload,
       { expiresIn: "7d" }
@@ -104,6 +106,7 @@ export const login = async (req: FastifyRequest, reply: FastifyReply) => {
       accessToken,
     });
   } catch (error) {
+    req.log.error(error);
     return reply.status(500).send({
       error: "Login failed",
       details: (error as Error).message,
@@ -112,19 +115,20 @@ export const login = async (req: FastifyRequest, reply: FastifyReply) => {
 };
 
 /* =========================
-   🔑 Google Login (header token)
+   🔑 Google Login (JWT Bearer)
 ========================= */
 export const googleLogin = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
-    const { token } = (req.body ?? {}) as { token?: string };
-    if (!token) return reply.status(400).send({ error: "Missing token" });
+    const { token, idToken } = (req.body ?? {}) as { token?: string; idToken?: string };
+    const googleToken = token || idToken;
+
+    if (!googleToken) return reply.status(400).send({ error: "Missing Google token" });
     if (!process.env.GOOGLE_CLIENT_ID) {
       throw new Error("GOOGLE_CLIENT_ID is not set in environment variables");
     }
 
-    // Verify Google ID token
     const ticket = await client.verifyIdToken({
-      idToken: token,
+      idToken: googleToken,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
 
@@ -140,7 +144,6 @@ export const googleLogin = async (req: FastifyRequest, reply: FastifyReply) => {
     const name = payload.name ?? "Google User";
     const avatar = payload.picture ?? null;
 
-    // Upsert to avoid race conditions
     const user = await req.server.prisma.user.upsert({
       where: { email },
       update: { name, avatar, provider: "google" },
@@ -149,12 +152,12 @@ export const googleLogin = async (req: FastifyRequest, reply: FastifyReply) => {
         email,
         avatar,
         provider: "google",
-        // store random hash to satisfy NOT NULL if your schema still requires it
         password: await bcrypt.hash(Math.random().toString(36).slice(-10), 10),
       },
       select: { id: true, name: true, email: true, isAdmin: true },
     });
 
+    // ✅ Use req.server.jwt.sign here too
     const accessToken = req.server.jwt.sign(
       { id: user.id, email: user.email, isAdmin: user.isAdmin } as JwtPayload,
       { expiresIn: "7d" }
@@ -165,9 +168,16 @@ export const googleLogin = async (req: FastifyRequest, reply: FastifyReply) => {
       user,
       accessToken,
     });
-  } catch (error) {
+  } catch (error: any) {
     req.log.error({ err: error }, "Google login failed");
-    return reply.status(500).send({
+
+    const isAuthError =
+      error.message?.includes("invalid") ||
+      error.message?.includes("expired") ||
+      error.message?.includes("audience") ||
+      error.message?.includes("token");
+
+    return reply.status(isAuthError ? 401 : 500).send({
       error: "Google login failed",
       details: (error as Error).message,
     });
@@ -175,19 +185,17 @@ export const googleLogin = async (req: FastifyRequest, reply: FastifyReply) => {
 };
 
 /* =========================
-   🚪 Logout (no cookie to clear)
+   🚪 Logout (stateless)
 ========================= */
 export const logout = async (_req: FastifyRequest, reply: FastifyReply) => {
-  // With Bearer tokens, logout is client-side: drop token from storage.
-  return reply.send({ message: "Logged out" });
+  return reply.send({ message: "Logged out successfully" });
 };
 
 /* =========================
-   🙋 Me (from Authorization header)
+   🙋 Me (from Bearer token)
 ========================= */
 export const me = async (req: FastifyRequest, reply: FastifyReply) => {
   try {
-    // Expects Authorization: Bearer <token>
     await req.jwtVerify<JwtPayload>();
     const id = (req.user as any).id as number;
 
@@ -195,10 +203,11 @@ export const me = async (req: FastifyRequest, reply: FastifyReply) => {
       where: { id },
       select: { id: true, name: true, email: true, isAdmin: true, avatar: true },
     });
+
     if (!user) return reply.code(404).send({ error: "User not found" });
 
     return reply.send({ user });
-  } catch {
+  } catch (error) {
     return reply.code(401).send({ error: "Unauthorized" });
   }
 };

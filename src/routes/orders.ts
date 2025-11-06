@@ -1,13 +1,14 @@
 import { FastifyInstance } from "fastify";
 import ordersController from "../controllers/ordersController";
-import orderController from "../controllers/orderController"; // new controller (placeOrder, getMyOrders)
+import orderController from "../controllers/orderController";
 
 /**
  * 🧩 Order Routes
+ * Fully protected by JWT authentication
  */
 export default async function orderRoutes(fastify: FastifyInstance) {
   /* -------------------------------
-     ✅ Place order (for customers)
+     ✅ Place order (customer only)
   ------------------------------- */
   fastify.post(
     "/orders",
@@ -16,7 +17,7 @@ export default async function orderRoutes(fastify: FastifyInstance) {
   );
 
   /* -------------------------------
-     ✅ Get customer’s own orders
+     ✅ Get logged-in customer’s orders
   ------------------------------- */
   fastify.get(
     "/orders/my",
@@ -34,44 +35,65 @@ export default async function orderRoutes(fastify: FastifyInstance) {
   );
 
   /* -------------------------------
-     🧾 View single order (auth OR guest)
+     🧾 View single order (auth required)
   ------------------------------- */
   fastify.get(
     "/orders/:orderNumber",
-    {
-      preHandler: [
-        async (req: any, reply: any) => {
-          if (typeof fastify.optionalAuthOrGuestToken === "function") {
-            await fastify.optionalAuthOrGuestToken(req, reply);
-          } else {
-            req.log?.warn?.(
-              "auth plugin not available: optionalAuthOrGuestToken missing"
-            );
-          }
-        },
-      ],
-    },
-    async (req, reply) => ordersController.getOrder(req, reply)
+    { preHandler: [fastify.authenticate] },
+    async (req: any, reply: any) => {
+      try {
+        const user = req.user; // populated by fastify.authenticate
+
+        const order = await fastify.prisma.order.findUnique({
+          where: { orderNumber: req.params.orderNumber },
+          include: { items: true },
+        });
+
+        if (!order) {
+          return reply.code(404).send({ error: "Order not found" });
+        }
+
+        // Verify that the logged-in user owns the order
+        if (order.userId !== user.id) {
+          return reply.code(403).send({ error: "Access denied" });
+        }
+
+        return reply.send({ data: order });
+      } catch (err) {
+        req.log.error(err);
+        return reply.code(500).send({ error: "Failed to fetch order" });
+      }
+    }
   );
 
   /* -------------------------------
-     🧾 Download invoice PDF
+     🧾 Download invoice PDF (auth required)
   ------------------------------- */
   fastify.get(
     "/orders/:orderNumber/invoice.pdf",
-    {
-      preHandler: [
-        async (req: any, reply: any) => {
-          if (typeof fastify.optionalAuthOrGuestToken === "function") {
-            await fastify.optionalAuthOrGuestToken(req, reply);
-          } else {
-            req.log?.warn?.(
-              "auth plugin not available: optionalAuthOrGuestToken missing"
-            );
-          }
-        },
-      ],
-    },
-    async (req, reply) => ordersController.getInvoicePdf(req, reply)
+    { preHandler: [fastify.authenticate] },
+    async (req: any, reply: any) => {
+      try {
+        const user = req.user;
+
+        const order = await fastify.prisma.order.findUnique({
+          where: { orderNumber: req.params.orderNumber },
+        });
+
+        if (!order) {
+          return reply.code(404).send({ error: "Order not found" });
+        }
+
+        if (order.userId !== user.id) {
+          return reply.code(403).send({ error: "Access denied" });
+        }
+
+        // Forward to controller to stream or return file
+        return ordersController.getInvoicePdf(req, reply);
+      } catch (err) {
+        req.log.error(err);
+        return reply.code(500).send({ error: "Failed to download invoice" });
+      }
+    }
   );
 }

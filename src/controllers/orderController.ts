@@ -1,12 +1,12 @@
 import { FastifyRequest, FastifyReply } from "fastify";
-import { Prisma, Order } from "@prisma/client"; // Prisma.Decimal, Order type
+import { Prisma, Order } from "@prisma/client";
 
 /* ---------------------------
    Type: PlaceOrderBody
 --------------------------- */
 type PlaceOrderBody = {
   userId?: number;
-  items: { variantId: number; quantity: number }[];
+  items: { variantId: number; quantity: number; remarks?: string }[]; // ✅ added remarks
   shippingAddress?: {
     name?: string;
     phone?: string;
@@ -50,7 +50,6 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
       return reply.status(400).send({ error: "Items array is required" });
     }
 
-    // strictly use logged-in user
     const userId = (req as any).user?.id;
     if (!userId) {
       return reply.status(401).send({ error: "Unauthorized: missing user" });
@@ -58,7 +57,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
 
     const prisma = (req.server as any).prisma;
 
-    // Validate items
+    // ✅ Validate items
     for (const it of items) {
       if (
         !it ||
@@ -87,7 +86,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
       subtotal = subtotal.add(new Prisma.Decimal(v.price).mul(it.quantity));
     }
 
-    // Determine shipping address
+    // ✅ Determine shipping address
     let shippingAddr = body.shippingAddress ?? null;
     if (!shippingAddr) {
       const addr = await prisma.address.findFirst({
@@ -105,7 +104,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
     if (pincode === null)
       return reply.status(400).send({ error: "Invalid postal code" });
 
-    // Check shipping rule
+    // ✅ Check shipping rule
     const matchingRule = await prisma.shippingRule.findFirst({
       where: {
         isActive: true,
@@ -122,9 +121,10 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
     const discount = new Prisma.Decimal(0);
     const grandTotal = subtotal.add(shipping).add(tax).sub(discount);
 
-    // Create order
+    // ✅ Create order number
     const orderNumber = `ORD${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
 
+    // ✅ Create order with remarks included
     const createdOrder = await prisma.order.create({
       data: {
         orderNumber,
@@ -150,7 +150,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
         paymentMethod: body.paymentMethod ?? "unknown",
         paymentStatus: "pending",
         orderStatus: "pending",
-        pickupTime: body.pickupTime ?? "Morning", // 🕒 Added new field
+        pickupTime: body.pickupTime ?? "Morning",
         items: {
           create: items.map((it) => {
             const v = byId.get(it.variantId);
@@ -162,6 +162,7 @@ export const placeOrder = async (req: FastifyRequest, reply: FastifyReply) => {
               quantity: it.quantity,
               price,
               total: price.mul(it.quantity),
+              remarks: it.remarks ?? null, // ✅ Added support for remarks
             };
           }),
         },
@@ -221,17 +222,17 @@ export const getMyOrders = async (req: FastifyRequest, reply: FastifyReply) => {
             productName: true,
             quantity: true,
             price: true,
+            remarks: true, // ✅ Added remarks in response
           },
         },
       },
       orderBy: { createdAt: "desc" },
     });
 
-    // 🧩 FIXED: Explicitly typed map callback
     return reply.send({
       message: "Customer orders fetched successfully",
       userId,
-      data: orders.map((o: Order & { items: { productName: string; quantity: number; price: Prisma.Decimal }[] }) => ({
+      data: orders.map((o: Order & { items: { productName: string; quantity: number; price: Prisma.Decimal; remarks?: string | null }[] }) => ({
         id: o.id,
         orderNumber: o.orderNumber,
         grandTotal: String(o.grandTotal),
@@ -245,7 +246,6 @@ export const getMyOrders = async (req: FastifyRequest, reply: FastifyReply) => {
     });
   } catch (err: any) {
     (req as any).log?.error?.({ err }, "getMyOrders failed");
-
     return reply.status(500).send({
       error: "Failed to fetch customer orders",
       details: err?.message ?? String(err),

@@ -1,32 +1,53 @@
 // src/routes/checkout.ts
-import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
-import checkoutController from "../controllers/checkoutController";
+import { FastifyPluginAsync } from "fastify";
+import { checkout } from "../controllers/checkoutController";
 
 const checkoutRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     "/checkout",
     {
       preHandler: [
-        async (req: FastifyRequest, reply: FastifyReply) => {
-          // ✅ optionalAuthOrGuestToken was added in src/plugins/auth.ts
-          if (typeof fastify.optionalAuthOrGuestToken === "function") {
+        async (req, reply) => {
+          // 🧠 Log exactly what comes from frontend
+          const authHeader = req.headers.authorization;
+          req.log.info({ authHeader }, "🔍 Incoming Authorization header for /checkout");
+
+          // If requireAuth plugin is available
+          if (typeof fastify.requireAuth === "function") {
             try {
-              await fastify.optionalAuthOrGuestToken(req, reply);
-            } catch (err) {
-              req.log.error({ err }, "Error in optionalAuthOrGuestToken");
-              return reply.code(401).send({ error: "Unauthorized" });
+              // ✅ Extract Bearer token if present
+              if (authHeader?.startsWith("Bearer ")) {
+                req.headers.authorization = authHeader; // keep as-is
+              } else if (authHeader) {
+                // ⚠️ Support plain token fallback (frontend may not prefix)
+                req.headers.authorization = `Bearer ${authHeader}`;
+              } else {
+                req.log.warn("⚠️ No Authorization header received at /checkout");
+                return reply.code(401).send({ error: "Missing Authorization header" });
+              }
+
+              await fastify.requireAuth(req, reply);
+              req.log.info("✅ requireAuth passed successfully for /checkout");
+            } catch (err: any) {
+              req.log.error({ err }, "❌ requireAuth failed for /checkout");
+              return reply.code(401).send({
+                error: "Unauthorized: Invalid or expired token. Please log in again.",
+              });
             }
           } else {
-            // Fallback: warn but don't block
-            req.log?.warn?.(
-              "auth plugin not available: optionalAuthOrGuestToken missing"
-            );
+            // 🚨 Auth plugin not configured
+            req.log.warn("⚠️ requireAuth not available (auth plugin missing)");
+            return reply
+              .code(500)
+              .send({ error: "Authentication system not configured" });
           }
         },
       ],
     },
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      return checkoutController.checkout(req, reply);
+    // Main controller
+    async (req, reply) => {
+      req.log.info("📦 Processing checkout request...");
+      return checkout(req, reply);
     }
   );
 };

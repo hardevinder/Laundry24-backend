@@ -32,6 +32,6 @@
     /* Performance */
     "skipLibCheck": true            // Skip type checks of .d.ts from node_modules
   },
-  "include": ["src", "src/types"],  // 👈 ensure custom types are included
+  "include": ["src", "src/types", "src/config"],  // 👈 ensure custom types are included
   "exclude": ["node_modules", "dist"]
 }
