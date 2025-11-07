@@ -6,8 +6,10 @@ import { sendOrderConfirmationEmail } from "../services/emailService";
 
 const prisma = new PrismaClient();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
-  apiVersion: "2025-10-29.clover",
+  apiVersion: "2023-10-16" as Stripe.LatestApiVersion,
 });
+
+
 
 /* ---------------------------
    Logging Helper
@@ -158,18 +160,25 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
 
     const deliveryFee = shippingNumeric > 0 ? shippingNumeric : 10;
 
-   const paymentIntent = await stripe.paymentIntents.create({
-        amount: Math.round(deliveryFee * 100),
-        currency: "cad",
-        customer: stripeCustomerId,
-        description: "Laundry Pickup & Delivery Fee (CAD)",
-        confirm: true,
-        payment_method: body.stripeToken, // ✅ use token directly
-        automatic_payment_methods: {
-          enabled: true,
-          allow_redirects: "never",
-        },
-      });
+  // ✅ Explicitly define and cast the payment_method_data for TypeScript
+const methodData = {
+  type: "card",
+  card: { token: body.stripeToken },
+} as any; // ✅ tell TypeScript to chill
+
+
+const paymentIntent = await stripe.paymentIntents.create({
+  amount: Math.round(deliveryFee * 100),
+  currency: "cad",
+  customer: stripeCustomerId,
+  description: "Laundry Pickup & Delivery Fee (CAD)",
+  confirm: true,
+  payment_method_data: methodData,
+  automatic_payment_methods: { enabled: true, allow_redirects: "never" },
+});
+
+
+
 
 
 

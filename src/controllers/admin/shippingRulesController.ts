@@ -28,7 +28,8 @@ function extractPostalPrefix(postalCode: string | undefined | null): string | nu
   const cleaned = postalCode.toUpperCase().replace(/\s+/g, "");
 
   // ✅ Match Canadian format like V6B1A1 or Y1A1A1
-  const postalRegex = /^[A-Z]\d[A-Z]\d[A-Z]\d$/;
+  const postalRegex = /^[A-Z]([0-9][A-Z][0-9][A-Z][0-9])?$/;
+
   if (!postalRegex.test(cleaned)) {
     console.log("❌ Invalid Canadian postal:", postalCode);
     return null;
