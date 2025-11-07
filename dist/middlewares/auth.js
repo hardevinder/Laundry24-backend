@@ -6,20 +6,26 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // src/middlewares/auth.ts
 const fastify_plugin_1 = __importDefault(require("fastify-plugin"));
 const jwt_1 = __importDefault(require("@fastify/jwt"));
+// ✅ JWT middleware plugin
 exports.default = (0, fastify_plugin_1.default)(async function (fastify) {
-    // ✅ Register JWT plugin
+    // Register JWT plugin globally
     fastify.register(jwt_1.default, {
         secret: process.env.JWT_SECRET || "super-secret",
     });
-    // ✅ Add helpers to Fastify instance
+    // =====================================================
+    // 🔹 Basic authentication
+    // =====================================================
     fastify.decorate("authenticate", async function (req, reply) {
         try {
             await req.jwtVerify();
         }
-        catch (err) {
+        catch {
             return reply.status(401).send({ error: "Unauthorized" });
         }
     });
+    // =====================================================
+    // 🔹 Admin guard
+    // =====================================================
     fastify.decorate("adminGuard", async function (req, reply) {
         try {
             await req.jwtVerify();
@@ -27,7 +33,7 @@ exports.default = (0, fastify_plugin_1.default)(async function (fastify) {
                 return reply.status(403).send({ error: "Forbidden: Admins only" });
             }
         }
-        catch (err) {
+        catch {
             return reply.status(401).send({ error: "Unauthorized" });
         }
     });

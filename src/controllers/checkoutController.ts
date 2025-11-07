@@ -158,21 +158,20 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
 
     const deliveryFee = shippingNumeric > 0 ? shippingNumeric : 10;
 
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(deliveryFee * 100),
-      currency: "cad",
-      customer: stripeCustomerId,
-      description: "Laundry Pickup & Delivery Fee (CAD)",
-      confirm: true,
-      payment_method_data: {
-        type: "card",
-        card: { token: body.stripeToken },
-      },
-      automatic_payment_methods: {
-        enabled: true,
-        allow_redirects: "never",
-      },
-    });
+   const paymentIntent = await stripe.paymentIntents.create({
+        amount: Math.round(deliveryFee * 100),
+        currency: "cad",
+        customer: stripeCustomerId,
+        description: "Laundry Pickup & Delivery Fee (CAD)",
+        confirm: true,
+        payment_method: body.stripeToken, // ✅ use token directly
+        automatic_payment_methods: {
+          enabled: true,
+          allow_redirects: "never",
+        },
+      });
+
+
 
     /* ---------------------------
        🧾 Create Order (no stock checks)

@@ -1,3 +1,4 @@
+// src/server.ts
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -5,7 +6,7 @@ import rateLimit from "@fastify/rate-limit";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import fastifyCookie from "@fastify/cookie";
-import fastifyJwt from "@fastify/jwt"; // ✅ add this
+import fastifyJwt from "@fastify/jwt";
 import path from "path";
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -33,46 +34,54 @@ const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 7121);
 const HOST = process.env.HOST || "0.0.0.0";
 
-// Allowed frontend origins
-const FRONTEND_ORIGINS = isProd
-  ? (process.env.FRONTEND_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [])
-  : ["http://localhost:3000"];
-
 const app = Fastify({
   logger: true,
   trustProxy: true,
 });
 
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads", "products");
-const INVOICES_DIR = process.env.INVOICE_UPLOAD_DIR || path.join(process.cwd(), "uploads", "invoices");
+const UPLOAD_DIR =
+  process.env.UPLOAD_DIR || path.join(process.cwd(), "uploads", "products");
+const INVOICES_DIR =
+  process.env.INVOICE_UPLOAD_DIR ||
+  path.join(process.cwd(), "uploads", "invoices");
 
+// -----------------------------------------------------
+// 🔹 Ensure directories exist
+// -----------------------------------------------------
 async function ensureDir(dirPath: string) {
   if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
   await fs.access(dirPath).catch(() => fs.mkdir(dirPath, { recursive: true }));
 }
 
+// -----------------------------------------------------
+// 🔹 Start Fastify server
+// -----------------------------------------------------
 async function start() {
   try {
-    process.on("unhandledRejection", (err) => app.log.error(err, "unhandledRejection"));
-    process.on("uncaughtException", (err) => app.log.error(err, "uncaughtException"));
+    process.on("unhandledRejection", (err: any) =>
+      app.log.error(err, "unhandledRejection")
+    );
+    process.on("uncaughtException", (err: any) =>
+      app.log.error(err, "uncaughtException")
+    );
 
-    // 1️⃣ Security
+    // 1️⃣ Security headers
     await app.register(helmet, {
       contentSecurityPolicy: false,
       crossOriginResourcePolicy: { policy: "cross-origin" },
     });
 
-    // 2️⃣ Rate limit
+    // 2️⃣ Rate limiting
     await app.register(rateLimit, {
       max: 300,
       timeWindow: "1 minute",
-      allowList: (req) => {
-        const ip = String((req as any).ip || "");
+      allowList: (req: any) => {
+        const ip = String(req.ip || "");
         return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ip);
       },
     });
 
-    // 3️⃣ CORS
+    // 3️⃣ CORS setup
     await app.register(cors, {
       origin: (origin, cb) => {
         if (!origin) return cb(null, true);
@@ -90,28 +99,45 @@ async function start() {
           cb(null, true);
         }
       },
-      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "Cookie"],
+      methods: [
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+      ],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+        "Cookie",
+      ],
       exposedHeaders: ["set-cookie"],
       credentials: true,
       maxAge: 86400,
     });
 
-    // 4️⃣ ✅ Register JWT globally so req.jwt works everywhere
+    // 4️⃣ JWT globally
     await app.register(fastifyJwt, {
       secret: process.env.JWT_SECRET || "supersecretlaundrykey",
     });
 
-    // 5️⃣ Auth plugin (adds guards, extractUserId, etc.)
+    // 5️⃣ Auth plugin (guards, decorators)
     await app.register(authPlugin);
 
     // 6️⃣ Prisma ORM
     await app.register(prismaPlugin);
 
-    // 7️⃣ Multipart uploads
+    // 7️⃣ File uploads
     await app.register(fastifyMultipart, {
       limits: {
-        fileSize: Number(process.env.UPLOAD_FILE_SIZE_LIMIT || 50 * 1024 * 1024),
+        fileSize: Number(
+          process.env.UPLOAD_FILE_SIZE_LIMIT || 50 * 1024 * 1024
+        ),
         files: Number(process.env.UPLOAD_MAX_FILES || 10),
       },
       attachFieldsToBody: true,
@@ -124,11 +150,11 @@ async function start() {
     }
     await app.register(fastifyCookie as any, cookieOptions as any);
 
-    // 9️⃣ Ensure directories
+    // 9️⃣ Ensure upload dirs
     await ensureDir(UPLOAD_DIR);
     await ensureDir(INVOICES_DIR);
 
-    // 🔟 Static file serving
+    // 🔟 Serve static files
     await app.register(fastifyStatic, {
       root: path.join(process.cwd(), "uploads", "products"),
       prefix: "/uploads/products/",
@@ -141,59 +167,59 @@ async function start() {
       decorateReply: false,
     });
 
-    // 🧾 Admin routes first
+    // 🧾 Admin routes
     app.register(shippingRulesRoutes, { prefix: "/api/admin" });
     app.register(adminOrdersRoutes, { prefix: "/api/admin" });
     app.register(adminInquiriesRoutes, { prefix: "/api" });
 
-    // 🚚 Shipping calculator (public)
-  // 🚚 Shipping calculator (public) — fixed for Canada
-app.get("/api/shipping/calculate", async (request, reply) => {
-  try {
-    const q: any = request.query || {};
-    const pincodeRaw = q.pincode;
-    const subtotalRaw = q.subtotal;
+    // 🚚 Shipping calculator (Canada)
+    app.get("/api/shipping/calculate", async (request, reply) => {
+      try {
+        const q: any = request.query || {};
+        const pincodeRaw = q.pincode;
+        const subtotalRaw = q.subtotal;
 
-    if (!pincodeRaw || String(pincodeRaw).trim() === "") {
-      return reply.code(400).send({ error: "pincode required" });
-    }
+        if (!pincodeRaw || String(pincodeRaw).trim() === "") {
+          return reply.code(400).send({ error: "pincode required" });
+        }
 
-    // ✅ Accept Canadian postal format (V6B1A1 or V6B 1A1)
-    const postalCode = String(pincodeRaw).trim().toUpperCase();
-    const postalRegex = /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/;
-    if (!postalRegex.test(postalCode)) {
-      console.log("❌ Invalid postal format:", postalCode);
-      return reply.code(400).send({ error: "invalid pincode format" });
-    }
+        const postalCode = String(pincodeRaw).trim().toUpperCase();
+        const postalRegex = /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/;
+        if (!postalRegex.test(postalCode)) {
+          console.log("❌ Invalid postal format:", postalCode);
+          return reply.code(400).send({ error: "invalid pincode format" });
+        }
 
-    // ✅ Parse subtotal
-    let subtotal = 0;
-    if (subtotalRaw && String(subtotalRaw).trim() !== "") {
-      const parsed = Number(subtotalRaw);
-      if (Number.isFinite(parsed)) subtotal = parsed;
-    }
+        let subtotal = 0;
+        if (subtotalRaw && String(subtotalRaw).trim() !== "") {
+          const parsed = Number(subtotalRaw);
+          if (Number.isFinite(parsed)) subtotal = parsed;
+        }
 
-    // ✅ Call the correct function
-    const result = await shippingCtrl.computeShippingForPostalCode(postalCode, subtotal);
+        const result = await shippingCtrl.computeShippingForPostalCode(
+          postalCode,
+          subtotal
+        );
 
-    return reply.send({
-      data: {
-        pincode: postalCode,
-        subtotal,
-        shipping: result?.shipping ?? 0,
-        appliedRule: result?.appliedRule ?? null,
-      },
+        return reply.send({
+          data: {
+            pincode: postalCode,
+            subtotal,
+            shipping: result?.shipping ?? 0,
+            appliedRule: result?.appliedRule ?? null,
+          },
+        });
+      } catch (err: any) {
+        console.error("💥 shipping/calculate error:", err);
+        (request as any).log?.error?.({
+          err: err?.message ?? err,
+          ctx: "shippingCalculate",
+        });
+        return reply
+          .code(500)
+          .send({ error: err?.message || "Internal error" });
+      }
     });
-  } catch (err: any) {
-    console.error("💥 shipping/calculate error:", err);
-    (request as any).log?.error?.({
-      err: err?.message ?? err,
-      ctx: "shippingCalculate",
-    });
-    return reply.code(500).send({ error: err?.message || "Internal error" });
-  }
-});
-
 
     // 🌐 Main API routes
     app.register(authRoutes, { prefix: "/api/auth" });
@@ -206,7 +232,7 @@ app.get("/api/shipping/calculate", async (request, reply) => {
     app.register(checkoutRoutes, { prefix: "/api" });
     app.register(stripeRoutes, { prefix: "/api/stripe" });
 
-    // Health check
+    // ✅ Health check route
     app.get("/health", async () => ({ ok: true }));
 
     await app.ready();
@@ -228,6 +254,7 @@ app.get("/api/shipping/calculate", async (request, reply) => {
         process.exit(1);
       }
     };
+
     process.on("SIGTERM", close);
     process.on("SIGINT", close);
   } catch (err) {

@@ -36,6 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+// src/server.ts
 const fastify_1 = __importDefault(require("fastify"));
 const cors_1 = __importDefault(require("@fastify/cors"));
 const helmet_1 = __importDefault(require("@fastify/helmet"));
@@ -43,7 +44,7 @@ const rate_limit_1 = __importDefault(require("@fastify/rate-limit"));
 const multipart_1 = __importDefault(require("@fastify/multipart"));
 const static_1 = __importDefault(require("@fastify/static"));
 const cookie_1 = __importDefault(require("@fastify/cookie"));
-const jwt_1 = __importDefault(require("@fastify/jwt")); // ✅ add this
+const jwt_1 = __importDefault(require("@fastify/jwt"));
 const path_1 = __importDefault(require("path"));
 const promises_1 = __importDefault(require("fs/promises"));
 const fs_1 = require("fs");
@@ -66,31 +67,34 @@ const auth_2 = __importDefault(require("./plugins/auth"));
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 7121);
 const HOST = process.env.HOST || "0.0.0.0";
-// Allowed frontend origins
-const FRONTEND_ORIGINS = isProd
-    ? (process.env.FRONTEND_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [])
-    : ["http://localhost:3000"];
 const app = (0, fastify_1.default)({
     logger: true,
     trustProxy: true,
 });
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path_1.default.join(process.cwd(), "uploads", "products");
-const INVOICES_DIR = process.env.INVOICE_UPLOAD_DIR || path_1.default.join(process.cwd(), "uploads", "invoices");
+const INVOICES_DIR = process.env.INVOICE_UPLOAD_DIR ||
+    path_1.default.join(process.cwd(), "uploads", "invoices");
+// -----------------------------------------------------
+// 🔹 Ensure directories exist
+// -----------------------------------------------------
 async function ensureDir(dirPath) {
     if (!(0, fs_1.existsSync)(dirPath))
         (0, fs_1.mkdirSync)(dirPath, { recursive: true });
     await promises_1.default.access(dirPath).catch(() => promises_1.default.mkdir(dirPath, { recursive: true }));
 }
+// -----------------------------------------------------
+// 🔹 Start Fastify server
+// -----------------------------------------------------
 async function start() {
     try {
         process.on("unhandledRejection", (err) => app.log.error(err, "unhandledRejection"));
         process.on("uncaughtException", (err) => app.log.error(err, "uncaughtException"));
-        // 1️⃣ Security
+        // 1️⃣ Security headers
         await app.register(helmet_1.default, {
             contentSecurityPolicy: false,
             crossOriginResourcePolicy: { policy: "cross-origin" },
         });
-        // 2️⃣ Rate limit
+        // 2️⃣ Rate limiting
         await app.register(rate_limit_1.default, {
             max: 300,
             timeWindow: "1 minute",
@@ -99,7 +103,7 @@ async function start() {
                 return ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ip);
             },
         });
-        // 3️⃣ CORS
+        // 3️⃣ CORS setup
         await app.register(cors_1.default, {
             origin: (origin, cb) => {
                 if (!origin)
@@ -119,21 +123,36 @@ async function start() {
                     cb(null, true);
                 }
             },
-            methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With", "Cookie"],
+            methods: [
+                "GET",
+                "HEAD",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS",
+            ],
+            allowedHeaders: [
+                "Content-Type",
+                "Authorization",
+                "Accept",
+                "Origin",
+                "X-Requested-With",
+                "Cookie",
+            ],
             exposedHeaders: ["set-cookie"],
             credentials: true,
             maxAge: 86400,
         });
-        // 4️⃣ ✅ Register JWT globally so req.jwt works everywhere
+        // 4️⃣ JWT globally
         await app.register(jwt_1.default, {
             secret: process.env.JWT_SECRET || "supersecretlaundrykey",
         });
-        // 5️⃣ Auth plugin (adds guards, extractUserId, etc.)
+        // 5️⃣ Auth plugin (guards, decorators)
         await app.register(auth_2.default);
         // 6️⃣ Prisma ORM
         await app.register(prisma_1.default);
-        // 7️⃣ Multipart uploads
+        // 7️⃣ File uploads
         await app.register(multipart_1.default, {
             limits: {
                 fileSize: Number(process.env.UPLOAD_FILE_SIZE_LIMIT || 50 * 1024 * 1024),
@@ -147,10 +166,10 @@ async function start() {
             cookieOptions.secret = process.env.COOKIE_SECRET;
         }
         await app.register(cookie_1.default, cookieOptions);
-        // 9️⃣ Ensure directories
+        // 9️⃣ Ensure upload dirs
         await ensureDir(UPLOAD_DIR);
         await ensureDir(INVOICES_DIR);
-        // 🔟 Static file serving
+        // 🔟 Serve static files
         await app.register(static_1.default, {
             root: path_1.default.join(process.cwd(), "uploads", "products"),
             prefix: "/uploads/products/",
@@ -161,12 +180,11 @@ async function start() {
             prefix: "/uploads/invoices/",
             decorateReply: false,
         });
-        // 🧾 Admin routes first
+        // 🧾 Admin routes
         app.register(shippingRules_1.default, { prefix: "/api/admin" });
         app.register(orders_2.default, { prefix: "/api/admin" });
         app.register(inquiries_1.default, { prefix: "/api" });
-        // 🚚 Shipping calculator (public)
-        // 🚚 Shipping calculator (public) — fixed for Canada
+        // 🚚 Shipping calculator (Canada)
         app.get("/api/shipping/calculate", async (request, reply) => {
             try {
                 const q = request.query || {};
@@ -175,21 +193,18 @@ async function start() {
                 if (!pincodeRaw || String(pincodeRaw).trim() === "") {
                     return reply.code(400).send({ error: "pincode required" });
                 }
-                // ✅ Accept Canadian postal format (V6B1A1 or V6B 1A1)
                 const postalCode = String(pincodeRaw).trim().toUpperCase();
                 const postalRegex = /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/;
                 if (!postalRegex.test(postalCode)) {
                     console.log("❌ Invalid postal format:", postalCode);
                     return reply.code(400).send({ error: "invalid pincode format" });
                 }
-                // ✅ Parse subtotal
                 let subtotal = 0;
                 if (subtotalRaw && String(subtotalRaw).trim() !== "") {
                     const parsed = Number(subtotalRaw);
                     if (Number.isFinite(parsed))
                         subtotal = parsed;
                 }
-                // ✅ Call the correct function
                 const result = await shippingCtrl.computeShippingForPostalCode(postalCode, subtotal);
                 return reply.send({
                     data: {
@@ -206,7 +221,9 @@ async function start() {
                     err: err?.message ?? err,
                     ctx: "shippingCalculate",
                 });
-                return reply.code(500).send({ error: err?.message || "Internal error" });
+                return reply
+                    .code(500)
+                    .send({ error: err?.message || "Internal error" });
             }
         });
         // 🌐 Main API routes
@@ -219,7 +236,7 @@ async function start() {
         app.register(cart_1.default, { prefix: "/api" });
         app.register(checkout_1.default, { prefix: "/api" });
         app.register(stripe_1.default, { prefix: "/api/stripe" });
-        // Health check
+        // ✅ Health check route
         app.get("/health", async () => ({ ok: true }));
         await app.ready();
         if (!isProd) {

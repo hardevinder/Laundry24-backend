@@ -1,3 +1,4 @@
+// src/routes/auth.ts
 import { FastifyInstance } from "fastify";
 import { signup, login, logout, me, googleLogin } from "../controllers/authController";
 
@@ -14,11 +15,11 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post("/google-login", googleLogin);
 
   // (Optional) Browser redirect-based Google OAuth (for web redirects)
-  app.get("/auth/google", async (req, reply) => {
-    reply.send({ message: "Google Auth route not implemented yet" });
+  app.get("/auth/google", async (_req, _reply) => {
+    _reply.send({ message: "Google Auth route not implemented yet" });
   });
 
-  app.get("/auth/google/callback", async (req, reply) => {
-    reply.send({ message: "Google callback route not implemented yet" });
+  app.get("/auth/google/callback", async (_req, _reply) => {
+    _reply.send({ message: "Google callback route not implemented yet" });
   });
 }

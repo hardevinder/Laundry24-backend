@@ -1,35 +1,68 @@
 // src/plugins/auth.ts
 import fp from "fastify-plugin";
-import { FastifyReply, FastifyRequest } from "fastify";
 
+// -------------------------------------------------------------
+// ✅ Extend @fastify/jwt user typing safely (fixes TS2687/TS2717)
+// -------------------------------------------------------------
+declare module "@fastify/jwt" {
+  interface FastifyJWT {
+    user: {
+      id: number;
+      email?: string;
+      role?: string;
+      isAdmin?: boolean;
+    };
+  }
+}
+
+// -------------------------------------------------------------
+// ✅ Extend Fastify interfaces (without redefining user)
+// -------------------------------------------------------------
 declare module "fastify" {
   interface FastifyInstance {
-    authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    adminGuard: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    requireAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    optionalAuthOrGuestToken: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    authenticate: (
+      req: import("fastify").FastifyRequest,
+      reply: import("fastify").FastifyReply
+    ) => Promise<void>;
+
+    adminGuard: (
+      req: import("fastify").FastifyRequest,
+      reply: import("fastify").FastifyReply
+    ) => Promise<void>;
+
+    requireAuth: (
+      req: import("fastify").FastifyRequest,
+      reply: import("fastify").FastifyReply
+    ) => Promise<void>;
+
+    optionalAuthOrGuestToken: (
+      req: import("fastify").FastifyRequest,
+      reply: import("fastify").FastifyReply
+    ) => Promise<void>;
   }
 
   interface FastifyRequest {
     userId?: number | null;
     guestToken?: string | null;
-    user?: any;
   }
 }
 
+// -------------------------------------------------------------
+// ✅ Plugin Implementation
+// -------------------------------------------------------------
 export default fp(async function (fastify) {
-  // ✅ Removed fastifyJwt registration — handled globally in server.ts
+  // ⚙️ JWT handled globally in server.ts
 
   // =====================================================
-  // 🔹 Helper to extract userId from token payload
+  // 🔹 Helper to extract userId from JWT
   // =====================================================
-  async function extractUserId(req: FastifyRequest) {
+  async function extractUserId(req: import("fastify").FastifyRequest) {
     try {
-      const payload: any = await req.jwtVerify();
-      const uid = payload?.userId ?? payload?.id ?? payload?.sub;
+      const payload = await req.jwtVerify();
+      const uid = (payload as any)?.userId ?? (payload as any)?.id ?? (payload as any)?.sub;
       if (uid) {
         req.userId = Number(uid);
-        req.user = payload;
+        (req as any).user = payload; // assign safely
       }
       return uid;
     } catch (err: any) {
@@ -39,26 +72,27 @@ export default fp(async function (fastify) {
   }
 
   // =====================================================
-  // 🔸 Basic user authentication
+  // 🔸 Basic Auth
   // =====================================================
-  fastify.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.decorate("authenticate", async (req, reply) => {
     const ok = await extractUserId(req);
     if (!ok) return reply.status(401).send({ error: "Unauthorized" });
   });
 
   // =====================================================
-  // 🔸 Admin-only guard
+  // 🔸 Admin-only Guard
   // =====================================================
-  fastify.decorate("adminGuard", async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.decorate("adminGuard", async (req, reply) => {
     const ok = await extractUserId(req);
     if (!ok) return reply.status(401).send({ error: "Unauthorized" });
-    if (!req.user?.isAdmin) return reply.status(403).send({ error: "Forbidden: Admins only" });
+    if (!(req as any).user?.isAdmin)
+      return reply.status(403).send({ error: "Forbidden: Admins only" });
   });
 
   // =====================================================
-  // 🔸 Require auth (sets userId)
+  // 🔸 Require Auth
   // =====================================================
-  fastify.decorate("requireAuth", async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.decorate("requireAuth", async (req, reply) => {
     const ok = await extractUserId(req);
     if (!ok) return reply.code(401).send({ error: "Unauthorized" });
   });
