@@ -8,7 +8,7 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const google_auth_library_1 = require("google-auth-library");
 const client = new google_auth_library_1.OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 /* =========================
-   👤 Signup (auto-login, header token)
+   👤 Signup (auto-login)
 ========================= */
 const signup = async (req, reply) => {
     try {
@@ -26,6 +26,7 @@ const signup = async (req, reply) => {
             data: { name, email: normalizedEmail, password: hashed, provider: "credentials" },
             select: { id: true, name: true, email: true, isAdmin: true },
         });
+        // ✅ Use req.server.jwt.sign instead of req.jwt.sign
         const accessToken = req.server.jwt.sign({ id: user.id, email: user.email, isAdmin: user.isAdmin }, { expiresIn: "7d" });
         return reply.status(201).send({
             message: "User registered successfully",
@@ -34,6 +35,7 @@ const signup = async (req, reply) => {
         });
     }
     catch (error) {
+        req.log.error(error);
         return reply.status(500).send({
             error: "Signup failed",
             details: error.message,
@@ -42,7 +44,7 @@ const signup = async (req, reply) => {
 };
 exports.signup = signup;
 /* =========================
-   🔐 Login (header token)
+   🔐 Login (JWT Bearer)
 ========================= */
 const login = async (req, reply) => {
     try {
@@ -57,7 +59,6 @@ const login = async (req, reply) => {
         if (!userRecord) {
             return reply.status(401).send({ error: "Invalid credentials" });
         }
-        // If account is Google-based, block password login (adjust if you want both)
         if (userRecord.provider === "google" || !userRecord.password) {
             return reply.status(400).send({ error: "Use Google login for this account" });
         }
@@ -65,6 +66,7 @@ const login = async (req, reply) => {
         if (!valid) {
             return reply.status(401).send({ error: "Invalid credentials" });
         }
+        // ✅ Use req.server.jwt.sign
         const accessToken = req.server.jwt.sign({ id: userRecord.id, email: userRecord.email, isAdmin: userRecord.isAdmin }, { expiresIn: "7d" });
         const user = {
             id: userRecord.id,
@@ -79,6 +81,7 @@ const login = async (req, reply) => {
         });
     }
     catch (error) {
+        req.log.error(error);
         return reply.status(500).send({
             error: "Login failed",
             details: error.message,
@@ -87,19 +90,19 @@ const login = async (req, reply) => {
 };
 exports.login = login;
 /* =========================
-   🔑 Google Login (header token)
+   🔑 Google Login (JWT Bearer)
 ========================= */
 const googleLogin = async (req, reply) => {
     try {
-        const { token } = (req.body ?? {});
-        if (!token)
-            return reply.status(400).send({ error: "Missing token" });
+        const { token, idToken } = (req.body ?? {});
+        const googleToken = token || idToken;
+        if (!googleToken)
+            return reply.status(400).send({ error: "Missing Google token" });
         if (!process.env.GOOGLE_CLIENT_ID) {
             throw new Error("GOOGLE_CLIENT_ID is not set in environment variables");
         }
-        // Verify Google ID token
         const ticket = await client.verifyIdToken({
-            idToken: token,
+            idToken: googleToken,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
         const payload = ticket.getPayload();
@@ -112,7 +115,6 @@ const googleLogin = async (req, reply) => {
         const email = payload.email.trim().toLowerCase();
         const name = payload.name ?? "Google User";
         const avatar = payload.picture ?? null;
-        // Upsert to avoid race conditions
         const user = await req.server.prisma.user.upsert({
             where: { email },
             update: { name, avatar, provider: "google" },
@@ -121,11 +123,11 @@ const googleLogin = async (req, reply) => {
                 email,
                 avatar,
                 provider: "google",
-                // store random hash to satisfy NOT NULL if your schema still requires it
                 password: await bcryptjs_1.default.hash(Math.random().toString(36).slice(-10), 10),
             },
             select: { id: true, name: true, email: true, isAdmin: true },
         });
+        // ✅ Use req.server.jwt.sign here too
         const accessToken = req.server.jwt.sign({ id: user.id, email: user.email, isAdmin: user.isAdmin }, { expiresIn: "7d" });
         return reply.status(200).send({
             message: "Google login successful",
@@ -135,7 +137,11 @@ const googleLogin = async (req, reply) => {
     }
     catch (error) {
         req.log.error({ err: error }, "Google login failed");
-        return reply.status(500).send({
+        const isAuthError = error.message?.includes("invalid") ||
+            error.message?.includes("expired") ||
+            error.message?.includes("audience") ||
+            error.message?.includes("token");
+        return reply.status(isAuthError ? 401 : 500).send({
             error: "Google login failed",
             details: error.message,
         });
@@ -143,19 +149,17 @@ const googleLogin = async (req, reply) => {
 };
 exports.googleLogin = googleLogin;
 /* =========================
-   🚪 Logout (no cookie to clear)
+   🚪 Logout (stateless)
 ========================= */
 const logout = async (_req, reply) => {
-    // With Bearer tokens, logout is client-side: drop token from storage.
-    return reply.send({ message: "Logged out" });
+    return reply.send({ message: "Logged out successfully" });
 };
 exports.logout = logout;
 /* =========================
-   🙋 Me (from Authorization header)
+   🙋 Me (from Bearer token)
 ========================= */
 const me = async (req, reply) => {
     try {
-        // Expects Authorization: Bearer <token>
         await req.jwtVerify();
         const id = req.user.id;
         const user = await req.server.prisma.user.findUnique({
@@ -166,7 +170,7 @@ const me = async (req, reply) => {
             return reply.code(404).send({ error: "User not found" });
         return reply.send({ user });
     }
-    catch {
+    catch (error) {
         return reply.code(401).send({ error: "Unauthorized" });
     }
 };

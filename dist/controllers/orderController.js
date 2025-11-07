@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getMyOrders = exports.placeOrder = void 0;
-const client_1 = require("@prisma/client"); // Prisma.Decimal, Order type
+const client_1 = require("@prisma/client");
 /* ---------------------------
    Helper: Validate Pincode
 --------------------------- */
@@ -28,13 +28,12 @@ const placeOrder = async (req, reply) => {
         if (!items || !Array.isArray(items) || items.length === 0) {
             return reply.status(400).send({ error: "Items array is required" });
         }
-        // strictly use logged-in user
         const userId = req.user?.id;
         if (!userId) {
             return reply.status(401).send({ error: "Unauthorized: missing user" });
         }
         const prisma = req.server.prisma;
-        // Validate items
+        // ✅ Validate items
         for (const it of items) {
             if (!it ||
                 typeof it.variantId !== "number" ||
@@ -57,7 +56,7 @@ const placeOrder = async (req, reply) => {
             const v = byId.get(it.variantId);
             subtotal = subtotal.add(new client_1.Prisma.Decimal(v.price).mul(it.quantity));
         }
-        // Determine shipping address
+        // ✅ Determine shipping address
         let shippingAddr = body.shippingAddress ?? null;
         if (!shippingAddr) {
             const addr = await prisma.address.findFirst({
@@ -73,7 +72,7 @@ const placeOrder = async (req, reply) => {
         const pincode = parseAndValidatePincode(shippingAddr.postalCode);
         if (pincode === null)
             return reply.status(400).send({ error: "Invalid postal code" });
-        // Check shipping rule
+        // ✅ Check shipping rule
         const matchingRule = await prisma.shippingRule.findFirst({
             where: {
                 isActive: true,
@@ -88,8 +87,9 @@ const placeOrder = async (req, reply) => {
         const tax = new client_1.Prisma.Decimal(0);
         const discount = new client_1.Prisma.Decimal(0);
         const grandTotal = subtotal.add(shipping).add(tax).sub(discount);
-        // Create order
+        // ✅ Create order number
         const orderNumber = `ORD${Date.now()}${Math.floor(Math.random() * 900 + 100)}`;
+        // ✅ Create order with remarks included
         const createdOrder = await prisma.order.create({
             data: {
                 orderNumber,
@@ -115,7 +115,7 @@ const placeOrder = async (req, reply) => {
                 paymentMethod: body.paymentMethod ?? "unknown",
                 paymentStatus: "pending",
                 orderStatus: "pending",
-                pickupTime: body.pickupTime ?? "Morning", // 🕒 Added new field
+                pickupTime: body.pickupTime ?? "Morning",
                 items: {
                     create: items.map((it) => {
                         const v = byId.get(it.variantId);
@@ -127,6 +127,7 @@ const placeOrder = async (req, reply) => {
                             quantity: it.quantity,
                             price,
                             total: price.mul(it.quantity),
+                            remarks: it.remarks ?? null, // ✅ Added support for remarks
                         };
                     }),
                 },
@@ -182,12 +183,12 @@ const getMyOrders = async (req, reply) => {
                         productName: true,
                         quantity: true,
                         price: true,
+                        remarks: true, // ✅ Added remarks in response
                     },
                 },
             },
             orderBy: { createdAt: "desc" },
         });
-        // 🧩 FIXED: Explicitly typed map callback
         return reply.send({
             message: "Customer orders fetched successfully",
             userId,
