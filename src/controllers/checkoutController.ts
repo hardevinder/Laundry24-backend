@@ -142,23 +142,63 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
     const discountNumeric = 0;
     const grandTotalNumeric = totals.subtotal + shippingNumeric + taxNumeric - discountNumeric;
 
-    /* ---------------------------
-       💳 Stripe Payment Flow
-    --------------------------- */
-    let stripeCustomerId = user.stripeId;
-    if (!stripeCustomerId) {
-      const customerStripe = await stripe.customers.create({
-        email: user.email,
-        name: user.name,
-      });
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { stripeId: customerStripe.id },
-      });
-      stripeCustomerId = customerStripe.id;
-    }
+   /* ---------------------------
+   💳 Stripe Payment Flow (email optional)
+--------------------------- */
+let stripeCustomerId = user.stripeId;
 
-    const deliveryFee = shippingNumeric > 0 ? shippingNumeric : 10;
+// 🧩 Get safe customer info
+const customerName = customer?.name || user?.name || "Guest Customer";
+const customerEmail =
+  customer?.email && customer.email.trim() !== "" ? customer.email.trim() : null;
+const customerPhone =
+  customer?.phone && customer.phone.trim() !== "" ? customer.phone.trim() : null;
+
+if (!stripeCustomerId) {
+  const stripeCustomerData: any = {
+    name: customerName,
+  };
+
+  if (customerEmail) stripeCustomerData.email = customerEmail;
+  if (customerPhone) stripeCustomerData.phone = customerPhone;
+
+  const customerStripe = await stripe.customers.create(stripeCustomerData);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { stripeId: customerStripe.id },
+  });
+
+  stripeCustomerId = customerStripe.id;
+} else {
+  // ✅ Verify that the Stripe customer actually exists
+  try {
+    await stripe.customers.retrieve(stripeCustomerId);
+  } catch (e) {
+    request.log.warn(
+      { stripeCustomerId },
+      "⚠️ Existing Stripe customer not found, creating new one..."
+    );
+
+    const stripeCustomerData: any = {
+      name: customerName,
+    };
+    if (customerEmail) stripeCustomerData.email = customerEmail;
+    if (customerPhone) stripeCustomerData.phone = customerPhone;
+
+    const newStripeCustomer = await stripe.customers.create(stripeCustomerData);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { stripeId: newStripeCustomer.id },
+    });
+
+    stripeCustomerId = newStripeCustomer.id;
+  }
+}
+
+const deliveryFee = shippingNumeric > 0 ? shippingNumeric : 10;
+
 
   // ✅ Explicitly define and cast the payment_method_data for TypeScript
 const methodData = {
