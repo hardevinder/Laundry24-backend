@@ -147,28 +147,53 @@ async function start() {
     app.register(adminInquiriesRoutes, { prefix: "/api" });
 
     // 🚚 Shipping calculator (public)
-    app.get("/api/shipping/calculate", async (request, reply) => {
-      try {
-        const q: any = request.query || {};
-        const pincode = Number(String(q.pincode ?? "").replace(/\D/g, ""));
-        const subtotal = Number(q.subtotal ?? 0);
-        if (!pincode || pincode < 10000 || pincode > 999999)
-          return reply.code(400).send({ error: "invalid pincode" });
+  // 🚚 Shipping calculator (public) — fixed for Canada
+app.get("/api/shipping/calculate", async (request, reply) => {
+  try {
+    const q: any = request.query || {};
+    const pincodeRaw = q.pincode;
+    const subtotalRaw = q.subtotal;
 
-        const result = await shippingCtrl.computeShippingForPincode(pincode, subtotal);
-        return reply.send({
-          data: {
-            pincode,
-            subtotal,
-            shipping: result?.shipping ?? 0,
-            appliedRule: result?.appliedRule ?? null,
-          },
-        });
-      } catch (err: any) {
-        (request as any).log?.error?.({ err: err?.message ?? err, ctx: "shippingCalculate" });
-        return reply.code(500).send({ error: err?.message || "Internal error" });
-      }
+    if (!pincodeRaw || String(pincodeRaw).trim() === "") {
+      return reply.code(400).send({ error: "pincode required" });
+    }
+
+    // ✅ Accept Canadian postal format (V6B1A1 or V6B 1A1)
+    const postalCode = String(pincodeRaw).trim().toUpperCase();
+    const postalRegex = /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/;
+    if (!postalRegex.test(postalCode)) {
+      console.log("❌ Invalid postal format:", postalCode);
+      return reply.code(400).send({ error: "invalid pincode format" });
+    }
+
+    // ✅ Parse subtotal
+    let subtotal = 0;
+    if (subtotalRaw && String(subtotalRaw).trim() !== "") {
+      const parsed = Number(subtotalRaw);
+      if (Number.isFinite(parsed)) subtotal = parsed;
+    }
+
+    // ✅ Call the correct function
+    const result = await shippingCtrl.computeShippingForPostalCode(postalCode, subtotal);
+
+    return reply.send({
+      data: {
+        pincode: postalCode,
+        subtotal,
+        shipping: result?.shipping ?? 0,
+        appliedRule: result?.appliedRule ?? null,
+      },
     });
+  } catch (err: any) {
+    console.error("💥 shipping/calculate error:", err);
+    (request as any).log?.error?.({
+      err: err?.message ?? err,
+      ctx: "shippingCalculate",
+    });
+    return reply.code(500).send({ error: err?.message || "Internal error" });
+  }
+});
+
 
     // 🌐 Main API routes
     app.register(authRoutes, { prefix: "/api/auth" });

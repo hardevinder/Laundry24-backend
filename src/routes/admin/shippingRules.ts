@@ -8,7 +8,7 @@ import * as shippingCtrl from "../../controllers/admin/shippingRulesController";
  *
  * Additionally, this file exposes a **public** endpoint:
  *   GET /api/shipping/calculate?pincode=XXXX&subtotal=NNN
- * which returns computed shipping for the provided pincode & subtotal.
+ * which returns computed shipping for the provided postal code & subtotal.
  */
 export default async function shippingRulesRoutes(
   fastify: FastifyInstance,
@@ -60,7 +60,7 @@ export default async function shippingRulesRoutes(
   );
 
   /* -----------------------------
-     🌍 Public: Shipping calculation
+     🌍 Public: Shipping calculation (Canada postal support)
   ----------------------------- */
   fastify.get(
     "/shipping/calculate",
@@ -87,21 +87,22 @@ export default async function shippingRulesRoutes(
           return reply.code(400).send({ error: "pincode required" });
         }
 
-        const pincodeDigits = String(pincodeRaw).replace(/\D/g, "");
-        if (!pincodeDigits) return reply.code(400).send({ error: "invalid pincode" });
-
-        const pincode = Number(pincodeDigits);
-        if (!Number.isInteger(pincode) || pincode < 10000 || pincode > 999999) {
-          return reply.code(400).send({ error: "invalid pincode" });
+        // ✅ Accept Canadian postal format: V6B1A1 or V6B 1A1
+        const pincode = String(pincodeRaw).trim().toUpperCase();
+        const postalRegex = /^[A-Z]\d[A-Z]\s?\d[A-Z]\d$/;
+        if (!postalRegex.test(pincode)) {
+          return reply.code(400).send({ error: "invalid pincode format" });
         }
 
+        // ✅ Parse subtotal safely
         let subtotal = 0;
         if (subtotalRaw && String(subtotalRaw).trim() !== "") {
           const parsed = Number(subtotalRaw);
           if (Number.isFinite(parsed)) subtotal = parsed;
         }
 
-        const result = await shippingCtrl.computeShippingForPincode(pincode, subtotal);
+        // ✅ Use correct function name from controller
+        const result = await shippingCtrl.computeShippingForPostalCode(pincode, subtotal);
         const shippingNumber = result?.shipping != null ? Number(result.shipping) : 0;
 
         return reply.send({
@@ -114,7 +115,10 @@ export default async function shippingRulesRoutes(
         });
       } catch (err: any) {
         try {
-          (request as any).log?.error?.({ err: err?.message ?? err, ctx: "shippingCalculate" });
+          (request as any).log?.error?.({
+            err: err?.message ?? err,
+            ctx: "shippingCalculate",
+          });
         } catch {}
         return reply.code(500).send({ error: err?.message ?? "Internal error" });
       }

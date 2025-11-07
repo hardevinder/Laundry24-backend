@@ -248,6 +248,7 @@ model ShippingRule {
   @@index([isActive, priority])
 }
 
+
 /// =========================
 /// 📩 INQUIRY FORM
 /// =========================
