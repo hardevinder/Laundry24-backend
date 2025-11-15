@@ -30,6 +30,8 @@ import stripeRoutes from "./routes/stripe";
 // ✅ Auth plugin (guards, decorators)
 import authPlugin from "./plugins/auth";
 
+import passwordRoutes from "./routes/password";
+
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 7121);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -223,6 +225,7 @@ async function start() {
 
     // 🌐 Main API routes
     app.register(authRoutes, { prefix: "/api/auth" });
+    app.register(passwordRoutes, { prefix: "/api/auth" }); // 🔹 NEW
     app.register(userRoutes, { prefix: "/api" });
     app.register(productRoutes, { prefix: "/api" });
     app.register(orderRoutes, { prefix: "/api" });

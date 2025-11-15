@@ -9,17 +9,22 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2023-10-16" as Stripe.LatestApiVersion,
 });
 
-
-
 /* ---------------------------
    Logging Helper
 --------------------------- */
 function safeLogError(request: any, err: any, ctx?: string) {
   try {
     const shortStack =
-      (err && err.stack && String(err.stack).split("\n").slice(0, 2).join("\n")) || undefined;
+      (err && err.stack && String(err.stack).split("\n").slice(0, 2).join("\n")) ||
+      undefined;
     const message = String(err && err.message ? err.message : err);
-    request.log?.error?.({ message, shortStack, ctx, errCode: err?.code, meta: err?.meta });
+    request.log?.error?.({
+      message,
+      shortStack,
+      ctx,
+      errCode: err?.code,
+      meta: err?.meta,
+    });
   } catch (_) {
     console.error("safeLogError fallback:", String(err));
   }
@@ -34,10 +39,12 @@ function computeTotals(cartItems: any[]) {
     const qty = Number(it.quantity || 0);
     return s + price * qty;
   }, 0);
+
   const shipping = 0;
   const tax = 0;
   const discount = 0;
   const grandTotal = subtotal + shipping + tax - discount;
+
   return { subtotal, shipping, tax, discount, grandTotal };
 }
 
@@ -48,12 +55,14 @@ function formatOrderNumber(orderId: number, date = new Date()) {
 }
 
 /* ---------------------------
-   CHECKOUT CONTROLLER (No Stock Logic)
+   CHECKOUT CONTROLLER (with cartId support)
 --------------------------- */
 export const checkout = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const body: any = request.body || {};
-    const userId = (request as any).userId ? Number((request as any).userId) : undefined;
+    const userId = (request as any).userId
+      ? Number((request as any).userId)
+      : undefined;
 
     if (!userId) {
       return reply.code(401).send({ error: "Login required to checkout" });
@@ -61,13 +70,17 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
 
     const paymentMethod = String(body.paymentMethod ?? "card");
     const customer = body.customer;
+    const requestedCartId = body.cartId ? Number(body.cartId) : undefined; // 👈 NEW
+
     request.log.info({ body }, "🧾 Incoming checkout body");
 
     if (!customer || !customer.name || !customer.email) {
-      return reply.code(400).send({ error: "customer.name and customer.email required" });
+      return reply
+        .code(400)
+        .send({ error: "customer.name and customer.email required" });
     }
 
-    // 🧠 Fetch user + cart
+    // 🧠 Fetch user + ALL carts (latest first)
     const user = await prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -77,13 +90,28 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
               include: { variant: true },
             },
           },
+          orderBy: {
+            createdAt: "desc", // 👈 latest cart first
+          },
         },
       },
     });
 
     if (!user) return reply.code(404).send({ error: "User not found" });
 
-    const cart = user.carts[0];
+    // 🎯 Choose which cart to use:
+    // 1) If cartId provided in body, match that
+    // 2) Else fallback to first non-empty cart
+    let cart: any | undefined;
+
+    if (requestedCartId) {
+      cart = user.carts.find((c: any) => c.id === requestedCartId);
+    }
+
+    if (!cart) {
+      cart = user.carts.find((c: any) => c.items && c.items.length > 0);
+    }
+
     if (!cart || !cart.items?.length) {
       return reply.code(400).send({ error: "Your cart is empty" });
     }
@@ -94,38 +122,74 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
       quantity: it.quantity,
       price: it.price,
       variant: it.variant,
-      remarks: it.remarks ?? null, // ✅ added
+      remarks: it.remarks ?? null,
     }));
 
     const totals = computeTotals(cartItems);
 
-    // ✅ Allow empty postal code
-    let shippingAddress =
-      customer.address ?? body.address ?? {
-        street: "",
+    /* ---------------------------
+       📍 Normalized shipping address
+    --------------------------- */
+    const rawAddress =
+      customer.address ??
+      body.address ?? {
+        line1: "",
+        line2: "",
         city: "",
         state: "",
         postalCode: "",
+        country: "CA",
       };
 
-    shippingAddress = {
-      street: shippingAddress.street || "",
-      city: shippingAddress.city || "",
-      state: shippingAddress.state || "",
-      postalCode: shippingAddress.postalCode || "",
+    const normalizedAddress = {
+      // contact info
+      label: rawAddress.label ?? "Home",
+      name: rawAddress.name ?? customer.name,
+      phone: rawAddress.phone ?? customer.phone ?? null,
+
+      // address lines (support street / fullAddress / addressLine)
+      line1:
+        rawAddress.line1 ||
+        rawAddress.street ||
+        rawAddress.fullAddress ||
+        rawAddress.addressLine ||
+        "",
+      line2: rawAddress.line2 || "",
+
+      city: rawAddress.city || "",
+      state: rawAddress.state || "",
+      postalCode:
+        rawAddress.postalCode ||
+        rawAddress.pincode ||
+        rawAddress.zip ||
+        rawAddress.postal ||
+        "",
+      country: rawAddress.country || "CA",
+
+      // optional geo
+      placeId: rawAddress.placeId ?? null,
+      latitude: rawAddress.latitude ?? null,
+      longitude: rawAddress.longitude ?? null,
     };
+
+    const shippingAddress: any = { ...normalizedAddress };
 
     /* ---------------------------
        🚚 Optional shipping rule
     --------------------------- */
     let shippingNumeric = 0;
-    if (shippingAddress.postalCode && shippingAddress.postalCode.trim() !== "") {
-      const postalCode = String(shippingAddress.postalCode || "").trim().toUpperCase();
+    if (normalizedAddress.postalCode && normalizedAddress.postalCode.trim() !== "") {
+      const postalCode = String(normalizedAddress.postalCode || "")
+        .trim()
+        .toUpperCase();
       const postalPrefix = postalCode.slice(0, 3);
 
       const matchingRule = postalPrefix
         ? await prisma.shippingRule.findFirst({
-            where: { isActive: true, name: { startsWith: postalPrefix } },
+            where: {
+              isActive: true,
+              postalPrefix: { startsWith: postalPrefix }, // ✅ correct column
+            },
             orderBy: [{ priority: "desc" }, { id: "desc" }],
           })
         : null;
@@ -140,87 +204,87 @@ export const checkout = async (request: FastifyRequest, reply: FastifyReply) => 
 
     const taxNumeric = 0;
     const discountNumeric = 0;
-    const grandTotalNumeric = totals.subtotal + shippingNumeric + taxNumeric - discountNumeric;
+    const grandTotalNumeric =
+      totals.subtotal + shippingNumeric + taxNumeric - discountNumeric;
 
-   /* ---------------------------
-   💳 Stripe Payment Flow (email optional)
---------------------------- */
-let stripeCustomerId = user.stripeId;
+    /* ---------------------------
+       💳 Stripe Customer Info (final values)
+    --------------------------- */
+    const finalCustomerName =
+      customer?.name && customer.name.trim() !== ""
+        ? customer.name.trim()
+        : user.name;
 
-// 🧩 Get safe customer info
-const customerName = customer?.name || user?.name || "Guest Customer";
-const customerEmail =
-  customer?.email && customer.email.trim() !== "" ? customer.email.trim() : null;
-const customerPhone =
-  customer?.phone && customer.phone.trim() !== "" ? customer.phone.trim() : null;
+    const finalCustomerEmail =
+      customer?.email && customer.email.trim() !== ""
+        ? customer.email.trim()
+        : user.email;
 
-if (!stripeCustomerId) {
-  const stripeCustomerData: any = {
-    name: customerName,
-  };
+    const finalCustomerPhone =
+      customer?.phone && customer.phone.trim() !== ""
+        ? customer.phone.trim()
+        : user.phone ?? null;
 
-  if (customerEmail) stripeCustomerData.email = customerEmail;
-  if (customerPhone) stripeCustomerData.phone = customerPhone;
+    let stripeCustomerId = user.stripeId;
 
-  const customerStripe = await stripe.customers.create(stripeCustomerData);
+    if (!stripeCustomerId) {
+      const stripeCustomerData: any = {
+        name: finalCustomerName,
+      };
+      if (finalCustomerEmail) stripeCustomerData.email = finalCustomerEmail;
+      if (finalCustomerPhone) stripeCustomerData.phone = finalCustomerPhone;
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { stripeId: customerStripe.id },
-  });
+      const customerStripe = await stripe.customers.create(stripeCustomerData);
 
-  stripeCustomerId = customerStripe.id;
-} else {
-  // ✅ Verify that the Stripe customer actually exists
-  try {
-    await stripe.customers.retrieve(stripeCustomerId);
-  } catch (e) {
-    request.log.warn(
-      { stripeCustomerId },
-      "⚠️ Existing Stripe customer not found, creating new one..."
-    );
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { stripeId: customerStripe.id },
+      });
 
-    const stripeCustomerData: any = {
-      name: customerName,
-    };
-    if (customerEmail) stripeCustomerData.email = customerEmail;
-    if (customerPhone) stripeCustomerData.phone = customerPhone;
+      stripeCustomerId = customerStripe.id;
+    } else {
+      // ✅ Verify that the Stripe customer actually exists
+      try {
+        await stripe.customers.retrieve(stripeCustomerId);
+      } catch (e) {
+        request.log.warn(
+          { stripeCustomerId },
+          "⚠️ Existing Stripe customer not found, creating new one..."
+        );
 
-    const newStripeCustomer = await stripe.customers.create(stripeCustomerData);
+        const stripeCustomerData: any = {
+          name: finalCustomerName,
+        };
+        if (finalCustomerEmail) stripeCustomerData.email = finalCustomerEmail;
+        if (finalCustomerPhone) stripeCustomerData.phone = finalCustomerPhone;
 
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { stripeId: newStripeCustomer.id },
+        const newStripeCustomer = await stripe.customers.create(stripeCustomerData);
+
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { stripeId: newStripeCustomer.id },
+        });
+
+        stripeCustomerId = newStripeCustomer.id;
+      }
+    }
+
+    const deliveryFee = shippingNumeric > 0 ? shippingNumeric : 10;
+
+    const methodData = {
+      type: "card",
+      card: { token: body.stripeToken },
+    } as any;
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(deliveryFee * 100),
+      currency: "cad",
+      customer: stripeCustomerId,
+      description: "Laundry Pickup & Delivery Fee (CAD)",
+      confirm: true,
+      payment_method_data: methodData,
+      automatic_payment_methods: { enabled: true, allow_redirects: "never" },
     });
-
-    stripeCustomerId = newStripeCustomer.id;
-  }
-}
-
-const deliveryFee = shippingNumeric > 0 ? shippingNumeric : 10;
-
-
-  // ✅ Explicitly define and cast the payment_method_data for TypeScript
-const methodData = {
-  type: "card",
-  card: { token: body.stripeToken },
-} as any; // ✅ tell TypeScript to chill
-
-
-const paymentIntent = await stripe.paymentIntents.create({
-  amount: Math.round(deliveryFee * 100),
-  currency: "cad",
-  customer: stripeCustomerId,
-  description: "Laundry Pickup & Delivery Fee (CAD)",
-  confirm: true,
-  payment_method_data: methodData,
-  automatic_payment_methods: { enabled: true, allow_redirects: "never" },
-});
-
-
-
-
-
 
     /* ---------------------------
        🧾 Create Order (no stock checks)
@@ -230,10 +294,10 @@ const paymentIntent = await stripe.paymentIntents.create({
         data: {
           orderNumber: "TEMP",
           userId,
-          customerName: customer.name,
-          customerEmail: customer.email,
-          customerPhone: customer.phone ?? null, // ✅ phone optional for Canada
-          shippingAddress,
+          customerName: finalCustomerName, // ✅ use final values
+          customerEmail: finalCustomerEmail,
+          customerPhone: finalCustomerPhone,
+          shippingAddress, // ✅ full normalized address (JSON)
           subtotal: totals.subtotal,
           shipping: shippingNumeric,
           tax: taxNumeric,
@@ -246,7 +310,6 @@ const paymentIntent = await stripe.paymentIntents.create({
         },
       });
 
-      // ✅ Create order items with remarks
       for (const ci of cartItems) {
         await tx.orderItem.create({
           data: {
@@ -257,7 +320,7 @@ const paymentIntent = await stripe.paymentIntents.create({
             quantity: ci.quantity,
             price: ci.price,
             total: ci.quantity * Number(ci.price),
-            remarks: ci.remarks ?? null, // ✅ added
+            remarks: ci.remarks ?? null,
           },
         });
       }
@@ -288,7 +351,10 @@ const paymentIntent = await stripe.paymentIntents.create({
     }
 
     try {
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/api\/?$/i, "");
+      const baseUrl = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(
+        /\/api\/?$/i,
+        ""
+      );
       const link = `${baseUrl}/orders/${createdOrder.orderNumber}`;
       await sendOrderConfirmationEmail({
         to: createdOrder.customerEmail,

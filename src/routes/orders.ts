@@ -35,65 +35,32 @@ export default async function orderRoutes(fastify: FastifyInstance) {
   );
 
   /* -------------------------------
+     🔁 Repeat an order -> create new cart
+     POST /orders/:orderId/repeat
+  ------------------------------- */
+  fastify.post(
+    "/orders/:orderId/repeat",
+    { preHandler: [fastify.authenticate] },
+    async (req, reply) => ordersController.repeatOrder(req, reply)
+  );
+
+  /* -------------------------------
      🧾 View single order (auth required)
+     Delegates to ordersController.getOrder
   ------------------------------- */
   fastify.get(
     "/orders/:orderNumber",
     { preHandler: [fastify.authenticate] },
-    async (req: any, reply: any) => {
-      try {
-        const user = req.user; // populated by fastify.authenticate
-
-        const order = await fastify.prisma.order.findUnique({
-          where: { orderNumber: req.params.orderNumber },
-          include: { items: true },
-        });
-
-        if (!order) {
-          return reply.code(404).send({ error: "Order not found" });
-        }
-
-        // Verify that the logged-in user owns the order
-        if (order.userId !== user.id) {
-          return reply.code(403).send({ error: "Access denied" });
-        }
-
-        return reply.send({ data: order });
-      } catch (err) {
-        req.log.error(err);
-        return reply.code(500).send({ error: "Failed to fetch order" });
-      }
-    }
+    async (req, reply) => ordersController.getOrder(req, reply)
   );
 
   /* -------------------------------
      🧾 Download invoice PDF (auth required)
+     Delegates to ordersController.getInvoicePdf
   ------------------------------- */
   fastify.get(
     "/orders/:orderNumber/invoice.pdf",
     { preHandler: [fastify.authenticate] },
-    async (req: any, reply: any) => {
-      try {
-        const user = req.user;
-
-        const order = await fastify.prisma.order.findUnique({
-          where: { orderNumber: req.params.orderNumber },
-        });
-
-        if (!order) {
-          return reply.code(404).send({ error: "Order not found" });
-        }
-
-        if (order.userId !== user.id) {
-          return reply.code(403).send({ error: "Access denied" });
-        }
-
-        // Forward to controller to stream or return file
-        return ordersController.getInvoicePdf(req, reply);
-      } catch (err) {
-        req.log.error(err);
-        return reply.code(500).send({ error: "Failed to download invoice" });
-      }
-    }
+    async (req, reply) => ordersController.getInvoicePdf(req, reply)
   );
 }

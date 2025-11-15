@@ -113,6 +113,9 @@ model User {
   stripeId      String? // Customer ID in Stripe
   defaultCardId String? // Default payment method
 
+  // 🔹 Forgot-password tokens relation
+  resetTokens PasswordResetToken[]
+
   @@index([provider])
 }
 
@@ -122,7 +125,7 @@ model Address {
   label      String? // e.g., "Home", "Office"
   name       String? // contact person name (optional)
   phone      String?
-  line1      String // street or building name
+  line1      String  // street or building name
   line2      String? // apartment, suite, etc.
   city       String
   state      String
@@ -130,7 +133,7 @@ model Address {
   country    String   @default("CA") // default to Canada
   latitude   Float?
   longitude  Float?
-  placeId    String? // Google Places ID
+  placeId    String?  // Google Places ID
   isDefault  Boolean  @default(false)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -248,7 +251,6 @@ model ShippingRule {
   @@index([isActive, priority])
 }
 
-
 /// =========================
 /// 📩 INQUIRY FORM
 /// =========================
@@ -260,4 +262,20 @@ model Inquiry {
   phone       String?
   message     String?
   createdAt   DateTime @default(now())
+}
+
+/// =========================
+/// 🔐 PASSWORD RESET TOKENS
+/// =========================
+model PasswordResetToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
 }

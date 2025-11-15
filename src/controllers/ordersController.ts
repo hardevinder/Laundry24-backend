@@ -11,7 +11,8 @@ const prisma = new PrismaClient();
 function safeLogError(request: any, err: any, ctx?: string) {
   try {
     const shortStack =
-      (err && err.stack && String(err.stack).split("\n").slice(0, 2).join("\n")) || undefined;
+      (err && err.stack && String(err.stack).split("\n").slice(0, 2).join("\n")) ||
+      undefined;
     const message = String(err && err.message ? err.message : err);
     request.log?.error?.({ message, shortStack, ctx, errCode: err?.code, meta: err?.meta });
   } catch (_) {
@@ -79,7 +80,7 @@ async function resolveInvoiceFilePath(invoicePdfPath: string | null | undefined)
 }
 
 /* ---------------------------
-   LIST ORDERS (public / authenticated)
+   LIST ORDERS (Admin / internal)
    Supports optional q (text search), page, pageSize
 --------------------------- */
 export const listOrders = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -91,10 +92,8 @@ export const listOrders = async (request: FastifyRequest, reply: FastifyReply) =
 
     const where: any = {};
 
-    // If request has userId (from auth plugin), filter to that user (admins should use admin endpoints)
-    const reqAny: any = request;
-    const userId = reqAny.userId ? Number(reqAny.userId) : undefined;
-    if (userId) where.userId = userId;
+    // NOTE: ❌ No userId filter here now
+    // Admin guard already protects this route
 
     if (q) {
       where.OR = [
@@ -140,7 +139,8 @@ export const getOrder = async (request: FastifyRequest, reply: FastifyReply) => 
 
     const reqAny: any = request;
     const userId: number | undefined = reqAny.userId;
-    const guestToken: string | undefined = reqAny.guestToken ?? (request.query && (request.query as any).token);
+    const guestToken: string | undefined =
+      reqAny.guestToken ?? (request.query && (request.query as any).token);
 
     if (userId) {
       if (order.userId !== null && Number(order.userId) === Number(userId)) {
@@ -175,7 +175,8 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
 
     const reqAny: any = request;
     const userId: number | undefined = reqAny.userId;
-    const guestToken: string | undefined = reqAny.guestToken ?? (request.query && (request.query as any).token);
+    const guestToken: string | undefined =
+      reqAny.guestToken ?? (request.query && (request.query as any).token);
 
     if (userId) {
       if (order.userId !== null && Number(order.userId) === Number(userId)) {
@@ -198,7 +199,10 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
 
     const resolved = await resolveInvoiceFilePath(order.invoicePdfPath);
     if (!resolved) {
-      request.log?.warn?.({ orderNumber, invoicePdfPath: order.invoicePdfPath }, "invoice path refused or invalid");
+      request.log?.warn?.(
+        { orderNumber, invoicePdfPath: order.invoicePdfPath },
+        "invoice path refused or invalid",
+      );
       return reply.code(400).send({ error: "Invalid invoice path" });
     }
 
@@ -234,8 +238,90 @@ export const getInvoicePdf = async (request: FastifyRequest, reply: FastifyReply
   }
 };
 
+/* ---------------------------
+   POST /api/orders/:orderId/repeat
+   Create a new Cart from an existing order
+--------------------------- */
+export const repeatOrder = async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const params: any = request.params || {};
+    const orderIdNum = Number(params.orderId || params.id);
+    if (!orderIdNum) {
+      return reply.code(400).send({ error: "orderId required" });
+    }
+
+    const reqAny: any = request;
+    const userId = reqAny.userId ? Number(reqAny.userId) : undefined;
+    if (!userId) {
+      return reply.code(401).send({ error: "Login required" });
+    }
+
+    // 🔎 Make sure order belongs to this user
+    const oldOrder = await prisma.order.findFirst({
+      where: {
+        id: orderIdNum,
+        userId,
+      },
+      include: {
+        items: true,
+      },
+    });
+
+    if (!oldOrder) {
+      return reply.code(404).send({ error: "Order not found" });
+    }
+
+    // 🛒 Create new cart for this user
+    const newCart = await prisma.cart.create({
+      data: {
+        userId,
+      },
+    });
+
+    // ♻ Copy items from order to cart
+    for (const item of oldOrder.items) {
+      if (!item.variantId) continue;
+
+      const variant = await prisma.variant.findUnique({
+        where: { id: item.variantId },
+      });
+
+      if (!variant) {
+        // Variant deleted / not available -> skip
+        continue;
+      }
+
+      // Price decision: prefer salePrice, then price, then old order item price
+      const priceDecimal =
+        (variant.salePrice as any) ??
+        (variant.price as any) ??
+        (item.price as any);
+
+      await prisma.cartItem.create({
+        data: {
+          cartId: newCart.id,
+          variantId: variant.id,
+          quantity: item.quantity,
+          price: priceDecimal,
+          remarks: item.remarks ?? null,
+        },
+      });
+    }
+
+    return reply.send({
+      success: true,
+      message: "Cart created from previous order",
+      cartId: newCart.id,
+    });
+  } catch (err: any) {
+    safeLogError(request, err, "repeatOrder");
+    return reply.code(500).send({ error: err?.message || "Internal error" });
+  }
+};
+
 export default {
   listOrders,
   getOrder,
   getInvoicePdf,
+  repeatOrder,
 };
