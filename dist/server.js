@@ -64,6 +64,7 @@ const inquiries_1 = __importDefault(require("./routes/admin/inquiries"));
 const stripe_1 = __importDefault(require("./routes/stripe"));
 // ✅ Auth plugin (guards, decorators)
 const auth_2 = __importDefault(require("./plugins/auth"));
+const password_1 = __importDefault(require("./routes/password"));
 const isProd = process.env.NODE_ENV === "production";
 const PORT = Number(process.env.PORT || 7121);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -228,6 +229,7 @@ async function start() {
         });
         // 🌐 Main API routes
         app.register(auth_1.default, { prefix: "/api/auth" });
+        app.register(password_1.default, { prefix: "/api/auth" }); // 🔹 NEW
         app.register(users_1.default, { prefix: "/api" });
         app.register(products_1.default, { prefix: "/api" });
         app.register(orders_1.default, { prefix: "/api" });

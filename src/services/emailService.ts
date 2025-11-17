@@ -15,19 +15,54 @@ type SendPasswordResetOptions = {
   resetLink: string;
 };
 
-// 🔹 Transporter config – uses .env, with sensible fallbacks
+// 🔹 Resolve SMTP config from env (designed for Office 365)
+const smtpHost = process.env.SMTP_HOST || "smtp.office365.com";
+const smtpSecure = process.env.SMTP_SECURE === "true"; // "true" => true, anything else => false
+const smtpPort = process.env.SMTP_PORT
+  ? Number(process.env.SMTP_PORT)
+  : smtpSecure
+  ? 465
+  : 587;
+
+const smtpUser = process.env.SMTP_USER;
+const smtpPass = process.env.SMTP_PASS;
+
+if (!smtpUser || !smtpPass) {
+  console.warn(
+    "[EMAIL] SMTP_USER or SMTP_PASS is missing. Emails will likely fail."
+  );
+}
+
+console.log("[EMAIL] Initializing SMTP transporter with:", {
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure,
+  user: smtpUser,
+});
+
+// 🔹 Transporter config – uses .env
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",      // fallback: Gmail
-  port: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 587,
-  secure: process.env.SMTP_SECURE === "true",           // for 587 => false
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure,
   auth:
-    process.env.SMTP_USER && process.env.SMTP_PASS
+    smtpUser && smtpPass
       ? {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
+          user: smtpUser,
+          pass: smtpPass,
         }
       : undefined,
 });
+
+// Optional: verify connection at startup
+transporter
+  .verify()
+  .then(() => {
+    console.log("[EMAIL] SMTP connection verified successfully.");
+  })
+  .catch((err) => {
+    console.error("[EMAIL] SMTP verification failed:", err);
+  });
 
 /**
  * 🧾 Order confirmation email
@@ -39,8 +74,8 @@ export async function sendOrderConfirmationEmail(
     throw new Error("sendOrderConfirmationEmail: missing recipient");
   }
 
-  const subject = `Order Confirmation ${
-    opts.orderNumber ? `- ${opts.orderNumber}` : ""
+  const subject = `Order Confirmation${
+    opts.orderNumber ? ` - ${opts.orderNumber}` : ""
   }`;
 
   const textLines = [
@@ -52,7 +87,7 @@ export async function sendOrderConfirmationEmail(
     opts.link ? `You can view your order here: ${opts.link}` : "",
     "",
     "Regards,",
-    "Your Store",
+    "Laundry24",
   ].filter(Boolean);
 
   const mailOptions: any = {
@@ -74,7 +109,7 @@ export async function sendOrderConfirmationEmail(
                ? `<p><a href="${opts.link}">View your order</a></p>`
                : ""
            }
-           <p>Regards,<br/>Your Store</p>`,
+           <p>Regards,<br/>Laundry24</p>`,
   };
 
   if (opts.pdfFilename) {
@@ -88,7 +123,18 @@ export async function sendOrderConfirmationEmail(
     ];
   }
 
-  return transporter.sendMail(mailOptions);
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log("[EMAIL] Order confirmation sent:", {
+      to: opts.to,
+      messageId: info.messageId,
+      accepted: info.accepted,
+    });
+    return info;
+  } catch (err) {
+    console.error("[EMAIL] Order confirmation FAILED:", err);
+    throw err;
+  }
 }
 
 /**
@@ -143,7 +189,18 @@ export async function sendPasswordResetEmail(
     html,
   };
 
-  return transporter.sendMail(mailOptions);
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log("[EMAIL] Password reset email sent:", {
+      to: opts.to,
+      messageId: info.messageId,
+      accepted: info.accepted,
+    });
+    return info;
+  } catch (err) {
+    console.error("[EMAIL] Password reset email FAILED:", err);
+    throw err;
+  }
 }
 
 export default {
