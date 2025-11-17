@@ -3,7 +3,7 @@ import nodemailer from "nodemailer";
 
 type SendOrderConfirmationOptions = {
   to: string;
-  name?: string;
+  name?: string | undefined;
   orderNumber?: string;
   link?: string;
   pdfFilename?: string | null;
@@ -11,7 +11,7 @@ type SendOrderConfirmationOptions = {
 
 type SendPasswordResetOptions = {
   to: string;
-  name?: string;
+  name?: string | undefined;
   resetLink: string;
 };
 
@@ -60,7 +60,7 @@ transporter
   .then(() => {
     console.log("[EMAIL] SMTP connection verified successfully.");
   })
-  .catch((err) => {
+  .catch((err: unknown) => {
     console.error("[EMAIL] SMTP verification failed:", err);
   });
 
@@ -131,7 +131,7 @@ export async function sendOrderConfirmationEmail(
       accepted: info.accepted,
     });
     return info;
-  } catch (err) {
+  } catch (err: unknown) {
     console.error("[EMAIL] Order confirmation FAILED:", err);
     throw err;
   }
@@ -197,7 +197,7 @@ export async function sendPasswordResetEmail(
       accepted: info.accepted,
     });
     return info;
-  } catch (err) {
+  } catch (err: unknown) {
     console.error("[EMAIL] Password reset email FAILED:", err);
     throw err;
   }
