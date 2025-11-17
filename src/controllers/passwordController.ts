@@ -50,8 +50,13 @@ export function createPasswordController(fastify: FastifyInstance) {
       },
     });
 
-    const baseUrl = process.env.APP_BASE_URL || "http://localhost:3000";
-    const resetLink = `${baseUrl}/reset-password?token=${encodeURIComponent(
+    // 🔹 Build frontend URL from env (LIVE domain), fallback to localhost for dev
+    const frontendBase =
+      process.env.FRONTEND_URL ||
+      process.env.APP_BASE_URL ||
+      "http://localhost:3000";
+
+    const resetLink = `${frontendBase}/reset-password?token=${encodeURIComponent(
       token
     )}`;
 
