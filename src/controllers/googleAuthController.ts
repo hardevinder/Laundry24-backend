@@ -1,14 +1,38 @@
+// src/controllers/googleAuthController.ts
 import { FastifyRequest, FastifyReply } from "fastify";
-import { OAuth2Client } from "google-auth-library";
+import { OAuth2Client, TokenPayload } from "google-auth-library";
 import jwt from "jsonwebtoken";
-// 👇 Adjust import to your prisma client file
-import prisma from "../prisma"; // or "../db/prismaClient"
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID!);
-const JWT_SECRET = process.env.JWT_SECRET || "change_me";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID as string;
+const JWT_SECRET = (process.env.JWT_SECRET as string) || "change_me";
+
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 interface GoogleLoginBody {
   token: string; // Google ID token from frontend
+}
+
+type AppUser = {
+  id: string;
+  email: string;
+  name?: string | null;
+  avatar?: string | null;
+};
+
+/**
+ * 📝 NOTE:
+ * Abhi yeh DB use nahi kar raha.
+ * Sirf Google payload se AppUser bana ke JWT generate kar raha hai.
+ * Baad mein tu yahan pe apna real DB (Prisma/Sequelize) laga sakda.
+ */
+function mapPayloadToUser(payload: TokenPayload): AppUser {
+  const id = (payload.sub as string) || (payload.email as string);
+  return {
+    id,
+    email: payload.email as string,
+    name: payload.name || null,
+    avatar: payload.picture || null,
+  };
 }
 
 export const googleLogin = async (
@@ -22,10 +46,16 @@ export const googleLogin = async (
       return reply.status(400).send({ error: "Missing Google token" });
     }
 
+    if (!GOOGLE_CLIENT_ID) {
+      return reply
+        .status(500)
+        .send({ error: "GOOGLE_CLIENT_ID is not configured on server" });
+    }
+
     // 1️⃣ Verify Google ID token
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: GOOGLE_CLIENT_ID, // cast to string so TS is happy
     });
 
     const payload = ticket.getPayload();
@@ -33,26 +63,8 @@ export const googleLogin = async (
       return reply.status(400).send({ error: "Invalid Google token" });
     }
 
-    const email = payload.email;
-    const name = payload.name || "";
-    const picture = payload.picture || null;
-
-    // 2️⃣ Find or create user in DB
-    // ⚠️ adjust field names to match your User model
-    let user = await prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (!user) {
-      user = await prisma.user.create({
-        data: {
-          email,
-          name,
-          avatar: picture,          // change/remove if field not present
-          authProvider: "google",   // change/remove if field not present
-        },
-      });
-    }
+    // 2️⃣ Map Google payload → AppUser (no DB yet)
+    const user = mapPayloadToUser(payload);
 
     // 3️⃣ Create your own JWT access token
     const accessToken = jwt.sign(
